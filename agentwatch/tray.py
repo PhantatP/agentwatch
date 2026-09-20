@@ -122,6 +122,33 @@ LABEL = {"running": "running", "waiting": "needs you", "idle": "idle"}
 DOT = {"running": "◐", "waiting": "●", "idle": "○", "none": "○"}
 
 
+# Toast wording, one (title, body) per notification kind. Phrased the way a
+# person would say it: the title names who wants what, the body says where.
+TOAST = {
+    "done": ("%s is done", "Wrapped up in %s — it's back to you."),
+    "input": ("%s needs you", "It's waiting on an answer in %s."),
+    "permission": ("%s is asking first", "It wants your go-ahead before acting in %s."),
+    "aborted": ("%s stopped", "You cut the turn short in %s."),
+}
+
+
+def tool_name(tool: str) -> str:
+    return {"claude": "Claude", "codex": "Codex"}.get(tool, tool.capitalize())
+
+
+def _fit(text: str, limit: int) -> str:
+    """Trim on a word boundary. A toast clipped mid-word by Windows reads as a
+    bug; an ellipsis reads as deliberate."""
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    cut = text[: limit - 1]
+    space = cut.rfind(" ")
+    if space > limit * 0.6:
+        cut = cut[:space]
+    return cut.rstrip(" ,.;:—-") + "…"
+
+
 def _noop(_icon=None, _item=None):
     """Placeholder action: an enabled row renders in normal text, not grey."""
 
@@ -284,22 +311,18 @@ class Tray:
     # ---------- notifications ----------
 
     def announce(self, event: dict, sess: store.Session):
-        kind, title = store.NOTIFY_BY_EVENT[event.get("event", "")]
-        project = os.path.basename((sess.cwd or "").rstrip("\\/")) or "session"
-        heading = "%s %s -- %s" % (sess.tool, title, project)
-        body = event.get("message") or ""
-        if not body:
-            body = {
-                "done": "Turn finished.",
-                "input": "Waiting for your response.",
-                "aborted": "The turn was interrupted.",
-            }.get(kind, "")
+        kind = store.NOTIFY_BY_EVENT[event.get("event", "")]
+        project = os.path.basename((sess.cwd or "").rstrip("\\/")) or "your session"
+        title, body = TOAST[kind]
+        message = event.get("message") or ""
+        # The CLI's own message is already a sentence; it just never says where.
+        body = "%s — in %s" % (message.rstrip(". "), project) if message else body % project
         if self.settings["toasts"]:
             try:
-                self.icon.notify(body[:200], heading[:60])
+                self.icon.notify(_fit(body, 170), _fit(title % tool_name(sess.tool), 56))
             except Exception:
                 pass
-        if self.settings["flash"] and kind in ("done", "input"):
+        if self.settings["flash"] and kind in ("done", "input", "permission"):
             try:
                 winui.flash_for_pid(sess.pid)
             except Exception:

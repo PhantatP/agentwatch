@@ -26,12 +26,13 @@ STATUS_BY_EVENT = {
     "SessionEnd": "ended",
 }
 
-# event -> (notification kind, title). Absent means "no notification".
+# event -> notification kind. Absent means "no notification". The wording for
+# each kind lives in the tray, which is the only thing that shows it.
 NOTIFY_BY_EVENT = {
-    "Stop": ("done", "Finished"),
-    "Notification": ("input", "Needs your input"),
-    "PermissionRequest": ("input", "Asking permission"),
-    "Interrupt": ("aborted", "Interrupted"),
+    "Stop": "done",
+    "Notification": "input",
+    "PermissionRequest": "permission",
+    "Interrupt": "aborted",
 }
 
 
