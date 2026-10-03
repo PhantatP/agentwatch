@@ -173,6 +173,16 @@ OneDrive, so it does not generate sync traffic:
 | `tray.pid` | Single-instance lock |
 | `agentwatch.log` | Errors only; normally empty |
 
+## Tests
+
+```
+python -m pip install pytest
+python -m pytest tests
+```
+
+The tests build sessions from a temporary event log and fake transcripts, so they
+need no running CLI and never touch your real `%LOCALAPPDATA%\agentwatch`.
+
 ## Notes and limits
 
 - Windows only. The taskbar flash and tray notifications are Win32-specific.
