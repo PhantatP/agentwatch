@@ -19,9 +19,19 @@ not depend on telling the hues apart:
 | --- | --- | --- |
 | Open arc | The tool's company colour | An agent is working |
 | Open arc with a centre dot | The tool's company colour | An agent is working, and its subagents are too |
-| Filled disc | Amber | An agent needs you: a question, a permission prompt, or an idle wait |
-| Ring | Green | Session open, turn finished |
-| Thin outline | Grey | Nothing running |
+| Filled disc | Amber | An agent needs you: a question or a permission prompt |
+| Ring | Green | A turn finished in the last 2 minutes |
+| Thin outline | Grey | Nothing running, or sessions open but quiet |
+
+Green is news only briefly: 2 minutes after a turn ends, the session goes quiet
+and the icon returns to grey (the session stays listed in the menu as idle). An
+editor's session panel stays open for hours, and green that long stopped meaning
+"just finished". A session you have only just opened has finished nothing, so it
+starts out grey too. Claude's "waiting for your input" reminder, sent 60 seconds
+after every finished turn, is not a question, so it does not turn the icon amber.
+And since answering a permission prompt fires no event, the tray watches the
+transcript instead: once work resumes after the prompt, amber goes back to the
+working arc.
 
 The working arc tells you *which* agent is working by its company colour:
 

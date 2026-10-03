@@ -14,11 +14,19 @@ from . import paths, proc, transcript
 
 MAX_EVENTS_BYTES = 512 * 1024
 LOCK_TRIES = 2500  # x 2ms: give up after ~5s rather than hang the agent's turn
+# How long a finished turn shows as "idle" (the green ring) before going quiet.
+# A session panel in an editor stays open for hours, and green that long stops
+# meaning "just finished".
+IDLE_FADE = 120
+# Claude Code sends this Notification 60s after every finished turn. It is not a
+# question or a permission prompt, so it must not turn the icon amber -- which,
+# never cleared until the next prompt, kept terminal sessions amber for hours.
+IDLE_NUDGE = "waiting for your input"
 NEWLINE = bytes([10])
 
 # event -> session status. Events not listed leave status unchanged.
 STATUS_BY_EVENT = {
-    "SessionStart": "idle",
+    "SessionStart": "quiet",  # open, but nothing has finished: no green ring
     "UserPromptSubmit": "running",
     "PreToolUse": "running",
     "PostToolUse": "running",
@@ -134,8 +142,13 @@ class Session:
     @property
     def state(self) -> str:
         """Status as shown. A turn that ended while its background agents
-        still work has not really finished, so it reads as running."""
-        return "running" if self.agents and self.status == "idle" else self.status
+        still work has not really finished, so it reads as running. A finished
+        one is news only briefly: after IDLE_FADE it goes quiet."""
+        if self.status != "idle":
+            return self.status
+        if self.agents:
+            return "running"
+        return "quiet" if time.time() - self.since > IDLE_FADE else "idle"
 
 
 class Sessions:
@@ -159,12 +172,16 @@ class Sessions:
             name = ev.get("event", "")
             sess = self.by_key.get(key)
             if sess is None:
-                sess = Session(tool=tool, sid=sid)
+                # Dated from its first event, not from when the tray read it:
+                # rebuilt from history at startup, it would otherwise look new.
+                sess = Session(tool=tool, sid=sid, since=ev.get("ts", time.time()))
                 self.by_key[key] = sess
             for attr in ("cwd", "pid", "model", "transcript"):
                 if ev.get(attr):
                     setattr(sess, attr, ev[attr])
             status = STATUS_BY_EVENT.get(name)
+            if name == "Notification" and IDLE_NUDGE in (ev.get("message") or ""):
+                status = None  # a reminder that the turn ended, not a question
             if status and status != sess.status:
                 sess.status = status
                 sess.since = ev.get("ts", time.time())
@@ -183,27 +200,33 @@ class Sessions:
         return notifications
 
     def reconcile(self):
-        """Correct `running` sessions that actually stopped.
+        """Correct sessions whose status no event will ever fix.
 
         Neither CLI emits an event when you hit Esc or close the terminal, so
-        without this a stopped session shows as working forever. Two independent
-        checks: the owning process is gone, or the transcript says the turn
-        ended. Never promotes a session back to running -- events do that.
+        without this a stopped session shows as working forever; and none when
+        you answer a permission prompt, so an answered one stays amber until the
+        turn ends. Two independent checks: the owning process is gone, or the
+        transcript has moved on -- the turn ended, or work resumed after the
+        prompt.
         """
         for key, sess in list(self.by_key.items()):
             if sess.pid and not proc.process_alive(sess.pid):
                 del self.by_key[key]
                 continue
             sess.agents = transcript.live_agents(sess.transcript)
-            if sess.status != "running":
+            if sess.status not in ("running", "waiting"):
                 continue
-            # Claude writes the new prompt ~140ms after the UserPromptSubmit
-            # hook, so just after it the tail still holds the previous turn's
-            # end. Only an end written after this turn began counts.
-            ended = transcript.ended_at(sess.transcript)
-            if ended is not None and ended > sess.since:
-                sess.status = "idle"
-                sess.since = time.time()
+            # Only an entry written after this status began counts. Claude
+            # writes a new prompt ~140ms after the UserPromptSubmit hook, so
+            # just after it the tail still holds the previous turn's end.
+            state, when = transcript.latest(sess.transcript)
+            if when is None or when <= sess.since:
+                continue
+            when = min(when, time.time())  # an unstamped entry counts as new
+            if state == "idle":
+                sess.status, sess.since = "idle", when
+            elif state == "running" and sess.status == "waiting":
+                sess.status, sess.since = "running", when
 
     def _drop_stale(self):
         cutoff = time.time() - self.STALE_AFTER
@@ -212,7 +235,7 @@ class Sessions:
                 del self.by_key[key]
 
     def active(self):
-        order = {"waiting": 0, "running": 1, "idle": 2}
+        order = {"waiting": 0, "running": 1, "idle": 2, "quiet": 3}
         return sorted(self.by_key.values(), key=lambda s: (order.get(s.state, 3), -s.since))
 
     def agent_count(self) -> int:
@@ -224,6 +247,8 @@ class Sessions:
             return "waiting"
         if "running" in statuses:
             return "running"
-        if statuses:
+        if "idle" in statuses:
             return "idle"
+        if statuses:
+            return "quiet"
         return "none"

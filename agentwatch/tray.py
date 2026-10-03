@@ -24,6 +24,7 @@ COLORS = {
     "running": (56, 132, 255),   # blue  -- agent is working (a tool not in TOOL_COLORS)
     "waiting": (255, 170, 0),    # amber -- agent wants you
     "idle": (46, 184, 114),      # green -- session open, turn finished
+    "quiet": (130, 136, 148),    # grey  -- sessions open, nothing new
     "none": (130, 136, 148),     # grey  -- nothing running
 }
 
@@ -149,8 +150,8 @@ def short_age(since: float) -> str:
     return "%dh%02dm" % (seconds // 3600, (seconds % 3600) // 60)
 
 
-LABEL = {"running": "running", "waiting": "needs you", "idle": "idle"}
-DOT = {"running": "◐", "waiting": "●", "idle": "○", "none": "○"}
+LABEL = {"running": "running", "waiting": "needs you", "idle": "idle", "quiet": "idle"}
+DOT = {"running": "◐", "waiting": "●", "idle": "○", "quiet": "○", "none": "○"}
 
 
 # Toast wording, one (title, body) per notification kind. Phrased the way a
@@ -466,6 +467,7 @@ class Tray:
             "running": "%d running" % sum(s.state == "running" for s in active),
             "waiting": "needs you",
             "idle": "%d idle" % len(active),
+            "quiet": "%d idle" % len(active),
             "none": "no sessions",
         }.get(state, state)
         lines = ["agentwatch · " + headline + agents_note(agents)]

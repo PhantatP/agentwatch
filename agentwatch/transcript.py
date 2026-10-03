@@ -137,10 +137,11 @@ def turn_state(path: str):
     return _summary(path)[0]
 
 
-def ended_at(path: str):
-    """When the turn in this transcript ended, or None if it has not."""
+def latest(path: str):
+    """-> (state, when): what the newest deciding entry says, and when it was
+    written. (None, None) if the transcript cannot tell."""
     state, _, when = _summary(path)
-    return when if state == "idle" else None
+    return state, when
 
 
 def activity(path: str) -> str:

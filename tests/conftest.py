@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime, timezone
 
 import pytest
 
@@ -26,6 +27,11 @@ def tool_use(name, **args):
             "content": [{"type": "tool_use", "name": name, "input": args}],
         },
     }
+
+
+def stamped(row, at):
+    """A transcript entry written at epoch `at`, as Claude Code stamps it."""
+    return dict(row, timestamp=datetime.fromtimestamp(at, timezone.utc).isoformat().replace("+00:00", "Z"))
 
 
 def write_rows(path, *rows, age=0.0):
