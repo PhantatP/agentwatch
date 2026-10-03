@@ -57,7 +57,7 @@ it; clicking a usage row refreshes.
 
 On every turn end you get a Windows toast (which persists in the Action Center)
 and a taskbar flash on the terminal window that owns the session — found by
-walking up the process tree from the hook's parent, so it works under Windows
+walking up the process tree from the agent CLI, so it works under Windows
 Terminal, pwsh, and VS Code alike.
 
 | Event | Notification |
@@ -163,8 +163,12 @@ OneDrive, so it does not generate sync traffic:
   the tray rather than left stuck. It re-reads the transcript tail: a turn that
   ended writes `stop_reason: end_turn`, an interrupted one writes
   `[Request interrupted by user]`. It also drops any session whose process is gone.
+- "Whose process" means the agent CLI, not the hook's direct parent. Claude Code
+  runs each hook through a shell (`bash.exe` with Git Bash) that exits with the
+  hook, so the hook walks past any shell ancestors and records the CLI's pid.
+  Recording the shell made every session look dead within a second.
 - Codex hooks are registered with `"async": true` so they never delay a turn.
-  Claude Code hooks are synchronous and add roughly 110ms per event, which is
-  Python interpreter startup.
+  Claude Code hooks are synchronous and add roughly 130ms per event: Python
+  interpreter startup plus the ~20ms process-tree walk.
 - Sessions with no event for 12 hours are dropped from the tray, so a terminal
   closed without a clean `SessionEnd` does not leave a stale row.

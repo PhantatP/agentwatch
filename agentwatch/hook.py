@@ -14,6 +14,18 @@ import sys
 
 from . import paths, proc, store
 
+# Claude Code runs a hook through a shell that exits with it, so the direct
+# parent is gone by the time the tray checks it. Skip past to the CLI itself.
+SHELLS = {"bash.exe", "sh.exe", "cmd.exe", "pwsh.exe", "powershell.exe"}
+
+
+def _owner_pid() -> int:
+    parent = os.getppid()
+    for pid in [parent] + proc.parent_chain(parent):
+        if proc.process_name(pid).lower() not in SHELLS:
+            return pid
+    return parent
+
 
 def _spawn_tray() -> None:
     """Start the tray if it is not already running."""
@@ -69,7 +81,7 @@ def main() -> int:
             "session": payload.get("session_id") or payload.get("sessionId") or "unknown",
             "event": event,
             "cwd": payload.get("cwd") or os.getcwd(),
-            "pid": os.getppid(),
+            "pid": _owner_pid(),
             "model": payload.get("model") or "",
             "message": payload.get("message") or "",
             "transcript": payload.get("transcript_path") or payload.get("transcriptPath") or "",
