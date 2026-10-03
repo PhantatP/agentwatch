@@ -195,6 +195,9 @@ need no running CLI and never touch your real `%LOCALAPPDATA%\agentwatch`.
   the tray rather than left stuck. It re-reads the transcript tail: a turn that
   ended writes `stop_reason: end_turn`, an interrupted one writes
   `[Request interrupted by user]`. It also drops any session whose process is gone.
+  Only an ending written after the turn began counts: Claude writes the new prompt
+  about 140ms after `UserPromptSubmit` fires, and a check in that gap would
+  otherwise read the previous turn's `end_turn` and leave the turn shown idle.
 - Subagents are read from their own transcripts, `<session>/subagents/agent-<id>.jsonl`,
   not from hooks: `SubagentStart` does not fire for background agents, which are
   the ones that matter. One is live while its tail says mid-turn — a finished one

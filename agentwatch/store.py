@@ -166,7 +166,11 @@ class Sessions:
             sess.agents = transcript.live_agents(sess.transcript)
             if sess.status != "running":
                 continue
-            if transcript.turn_state(sess.transcript) == "idle":
+            # Claude writes the new prompt ~140ms after the UserPromptSubmit
+            # hook, so just after it the tail still holds the previous turn's
+            # end. Only an end written after this turn began counts.
+            ended = transcript.ended_at(sess.transcript)
+            if ended is not None and ended > sess.since:
                 sess.status = "idle"
                 sess.since = time.time()
 

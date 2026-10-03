@@ -1,3 +1,6 @@
+import time
+from datetime import datetime, timezone
+
 from agentwatch import store
 from conftest import END_TURN, HANDBACK, PROMPT, tool_use, write_rows
 
@@ -8,6 +11,31 @@ def test_live_session_survives_reconcile(events):
     sessions.poll()
     sessions.reconcile()
     assert sessions.aggregate() == "running"
+
+
+def _stamped(row, at):
+    return dict(row, timestamp=datetime.fromtimestamp(at, timezone.utc).isoformat().replace("+00:00", "Z"))
+
+
+def test_new_turn_survives_the_previous_turns_end_turn(events):
+    """Claude writes the prompt ~140ms after the UserPromptSubmit hook, so a
+    reconcile in that gap sees the previous turn's end_turn. It must not count."""
+    write_rows(events.transcript, PROMPT, _stamped(END_TURN, time.time() - 20))
+    sessions = store.Sessions()
+    events("UserPromptSubmit")
+    sessions.poll()
+    sessions.reconcile()
+    assert sessions.aggregate() == "running"
+
+
+def test_interrupt_after_the_turn_started_still_ends_it(events):
+    sessions = store.Sessions()
+    events("UserPromptSubmit")
+    sessions.poll()
+    interrupted = {"type": "user", "message": {"content": "[Request interrupted by user]"}}
+    write_rows(events.transcript, PROMPT, _stamped(interrupted, time.time() + 1))
+    sessions.reconcile()
+    assert sessions.aggregate() == "idle"
 
 
 def test_session_with_dead_process_is_dropped(events):

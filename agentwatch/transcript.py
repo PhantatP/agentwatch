@@ -12,12 +12,13 @@ user tool_result. An interrupt is written as a user message containing
 import json
 import os
 import time
+from datetime import datetime
 
 TAIL_BYTES = 64 * 1024
 AGENT_QUIET = 15 * 60  # longer than the 10-minute cap on a single tool call
 INTERRUPT_MARKERS = ("Request interrupted", "[Request interrupted by user]")
 
-_cache: dict = {}  # path -> ((mtime, size), (state, activity))
+_cache: dict = {}  # path -> ((mtime, size), (state, activity, when))
 
 
 def _tail(path: str) -> str:
@@ -66,11 +67,23 @@ def _activity(obj: dict) -> str:
     return "thinking"  # mid-reasoning, or waiting on the model after a tool result
 
 
+def _entry_time(obj) -> float:
+    """When an entry was written, in epoch seconds. An unstamped one counts as
+    new, so it is never dismissed as left over from an earlier turn."""
+    try:
+        return datetime.fromisoformat(obj["timestamp"].replace("Z", "+00:00")).timestamp()
+    except (KeyError, TypeError, AttributeError, ValueError):
+        return float("inf")
+
+
 def _state_from_text(text: str):
-    """-> (state, activity). State is 'running' | 'idle' | None (undetermined);
-    activity is '' unless running."""
+    """-> (state, activity, when). State is 'running' | 'idle' | None
+    (undetermined); activity is '' unless running; when is the deciding entry's
+    time."""
     state, entry = _state_and_entry(text)
-    return state, (_activity(entry) if state == "running" else "")
+    if entry is None:
+        return None, "", None
+    return state, (_activity(entry) if state == "running" else ""), _entry_time(entry)
 
 
 def _state_and_entry(text: str):
@@ -100,14 +113,14 @@ def _state_and_entry(text: str):
 
 
 def _summary(path: str):
-    """-> (state, activity), cached per (mtime, size) so a 1s poll costs
+    """-> (state, activity, when), cached per (mtime, size) so a 1s poll costs
     nothing when nothing changed."""
     if not path:
-        return None, ""
+        return None, "", None
     try:
         stat = os.stat(path)
     except OSError:
-        return None, ""
+        return None, "", None
     key = (stat.st_mtime, stat.st_size)
     cached = _cache.get(path)
     if cached and cached[0] == key:
@@ -115,13 +128,19 @@ def _summary(path: str):
     try:
         summary = _state_from_text(_tail(path))
     except OSError:
-        return None, ""
+        return None, "", None
     _cache[path] = (key, summary)
     return summary
 
 
 def turn_state(path: str):
     return _summary(path)[0]
+
+
+def ended_at(path: str):
+    """When the turn in this transcript ended, or None if it has not."""
+    state, _, when = _summary(path)
+    return when if state == "idle" else None
 
 
 def activity(path: str) -> str:
