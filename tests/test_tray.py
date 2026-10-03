@@ -3,7 +3,7 @@ import time
 import pytest
 
 from agentwatch import tray, winui
-from conftest import PROMPT, tool_use, write_rows
+from conftest import PROMPT, stamped, tool_use, write_rows
 
 
 @pytest.fixture
@@ -46,8 +46,8 @@ def _announce_with(monkeypatch, events, foreground):
     t = tray.Tray()
     shown, flashed = [], []
     monkeypatch.setattr(t.icon, "notify", lambda body, title: shown.append(title))
-    monkeypatch.setattr(winui, "is_foreground", lambda pid: foreground)
-    monkeypatch.setattr(winui, "flash_for_pid", lambda pid, **kw: flashed.append(pid))
+    monkeypatch.setattr(winui, "is_foreground", lambda pid, cwd: foreground)
+    monkeypatch.setattr(winui, "flash_for_pid", lambda pid, cwd, **kw: flashed.append(pid))
     events("Stop")
     for event, sess in t.sessions.poll():
         t.announce(event, sess)
@@ -62,6 +62,74 @@ def test_toast_when_session_window_is_behind(events, monkeypatch):
     shown, flashed = _announce_with(monkeypatch, events, foreground=False)
     assert shown == ["Claude is done"]
     assert len(flashed) == 1
+
+
+@pytest.fixture
+def watched(events, monkeypatch):
+    """A Tray whose toasts are recorded, with the session window in front or
+    not as the test says, and a clock the test can move forward."""
+    t = tray.Tray()
+    t.toasts, t.in_front, t.clock = [], True, [time.time()]
+    monkeypatch.setattr(t.icon, "notify", lambda body, title: t.toasts.append(title))
+    monkeypatch.setattr(winui, "is_foreground", lambda pid, cwd: t.in_front)
+    monkeypatch.setattr(winui, "flash_for_pid", lambda pid, cwd, **kw: None)
+    monkeypatch.setattr(time, "time", lambda: t.clock[0])
+
+    def later(seconds):
+        t.clock[0] += seconds
+        t.tick()
+
+    t.later = later
+    t.settings["toasts"] = True
+    return t
+
+
+def test_unseen_finish_in_front_is_reminded_after_3_minutes(events, watched):
+    events("UserPromptSubmit", ts=watched.clock[0])
+    events("Stop", ts=watched.clock[0])
+    watched.later(tray.DONE_GRACE + 1)
+    assert watched.toasts == []  # its window is in front: no toast yet
+    watched.later(tray.REMIND_AFTER["done"])
+    assert watched.toasts == ["Claude is still waiting on you"]
+    watched.later(600)
+    assert len(watched.toasts) == 1  # once per wait
+
+
+def test_finish_already_toasted_is_not_reminded(events, watched):
+    watched.in_front = False
+    events("UserPromptSubmit", ts=watched.clock[0])
+    events("Stop", ts=watched.clock[0])
+    watched.later(tray.DONE_GRACE + 1)
+    watched.later(tray.REMIND_AFTER["done"] + 60)
+    assert watched.toasts == ["Claude is done"]
+
+
+def test_unanswered_permission_is_reminded_after_1_minute(events, watched):
+    watched.in_front = False  # Claude's permission prompts never toast at all
+    asking = stamped(tool_use("Bash"), watched.clock[0] - 1)  # written just before it asked
+    write_rows(events.transcript, PROMPT, asking)
+    events("UserPromptSubmit", ts=watched.clock[0])
+    events("Notification", ts=watched.clock[0], message="Claude needs your permission to use Bash")
+    watched.later(30)
+    assert watched.toasts == []
+    watched.later(tray.REMIND_AFTER["permission"])
+    assert watched.toasts == ["Claude still needs your go-ahead"]
+
+
+def test_a_reply_in_time_cancels_the_reminder(events, watched):
+    events("UserPromptSubmit", ts=watched.clock[0])
+    events("Stop", ts=watched.clock[0])
+    watched.later(60)
+    events("UserPromptSubmit", ts=watched.clock[0])
+    watched.later(tray.REMIND_AFTER["done"] + 60)
+    assert watched.toasts == []
+
+
+def test_an_interrupt_is_not_reminded(events, watched):
+    events("UserPromptSubmit", sid="X", tool="codex", ts=watched.clock[0])
+    events("Interrupt", sid="X", tool="codex", ts=watched.clock[0])
+    watched.later(tray.REMIND_AFTER["done"] + 60)
+    assert watched.toasts == []
 
 
 def test_menu_shows_activity_and_named_agents(events):

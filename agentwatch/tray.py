@@ -19,6 +19,8 @@ POLL_SECONDS = 1.0
 USAGE_SECONDS = 20.0
 DONE_GRACE = 3.0  # hold a "done" this long in case the next turn starts at once
 WARN_PERCENT = 90  # toast once a limit window passes this
+# A wait you got no toast for is reminded once it has gone unanswered this long.
+REMIND_AFTER = {"permission": 60, "done": 180}
 
 COLORS = {
     "running": (56, 132, 255),   # blue  -- agent is working (a tool not in TOOL_COLORS)
@@ -160,6 +162,8 @@ TOAST = {
     "done": ("%s is done", "Wrapped up in %s — it's back to you."),
     "permission": ("%s is asking first", "It wants your go-ahead before acting in %s."),
     "aborted": ("%s stopped", "You cut the turn short in %s."),
+    "remind_done": ("%s is still waiting on you", "It finished in %s a few minutes ago."),
+    "remind_permission": ("%s still needs your go-ahead", "A permission prompt in %s is unanswered."),
 }
 
 
@@ -203,6 +207,7 @@ class Tray:
         self.first_poll = True
         self.held = []  # notifications not yet announced
         self.warned = set()  # (tool, window, reset time) already warned about
+        self.notified = set()  # (tool, session, since): waits you were told about
         self.health = []  # [(tool, status, healthy)] for the HOOKS section
         self.log_errors = 0
         self.started = time.time()
@@ -236,18 +241,18 @@ class Tray:
                     short_age(sess.since),
                     agents_note(len(sess.agents)),
                 ),
-                self.reveal(sess.pid),
+                self.reveal(sess),
             )
             if sess.status == "running":
                 doing = transcript.activity(sess.transcript)
                 if doing:
-                    yield item("        " + _menu_text(_fit(doing, 48)), self.reveal(sess.pid))
+                    yield item("        " + _menu_text(_fit(doing, 48)), self.reveal(sess))
             for path in sess.agents.values():
                 line = _fit(transcript.agent_label(path), 44)
                 doing = transcript.activity(path)
                 if doing:
                     line += " — " + _fit(doing, 32)
-                yield item("        ↳ " + _menu_text(line), self.reveal(sess.pid))
+                yield item("        ↳ " + _menu_text(line), self.reveal(sess))
 
         yield pystray.Menu.SEPARATOR
         for header, rows in self.usage_sections():
@@ -336,11 +341,11 @@ class Tray:
             )
         return sections
 
-    def reveal(self, pid: int):
-        """Clicking a session flashes the terminal window that owns it."""
+    def reveal(self, sess: store.Session):
+        """Clicking a session flashes the window that hosts it."""
         def handler(_icon, _item):
             try:
-                winui.flash_for_pid(pid, count=6)
+                winui.flash_for_pid(sess.pid, sess.cwd, count=6)
             except Exception:
                 pass
         return handler
@@ -407,14 +412,35 @@ class Tray:
 
     def announce(self, event: dict, sess: store.Session):
         try:
-            if winui.is_foreground(sess.pid):
-                return  # you are already looking at it
+            if winui.is_foreground(sess.pid, sess.cwd):
+                return  # you are looking at it -- remind() follows up if not
         except Exception:
             pass
-        kind = store.NOTIFY_BY_EVENT[event.get("event", "")]
+        self.notified.add((sess.tool, sess.sid, sess.since))
+        self.deliver(store.NOTIFY_BY_EVENT[event.get("event", "")], sess, event.get("message") or "")
+
+    def remind(self):
+        """A second chance for a wait you were never told about: its window was
+        in front, so it got no toast -- but in front is not the same as looked
+        at -- or it was a Claude permission prompt, which never toasts. Once per
+        wait, and only while nothing has changed since it began."""
+        now = time.time()
+        for sess in self.sessions.active():
+            if sess.status == "waiting":
+                kind, delay = "remind_permission", REMIND_AFTER["permission"]
+            elif sess.status == "idle" and sess.last_event == "Stop" and not sess.agents:
+                kind, delay = "remind_done", REMIND_AFTER["done"]
+            else:
+                continue  # working, interrupted by you, or just opened
+            wait = (sess.tool, sess.sid, sess.since)
+            if wait in self.notified or sess.since < self.started or now - sess.since < delay:
+                continue
+            self.notified.add(wait)
+            self.deliver(kind, sess)
+
+    def deliver(self, kind: str, sess: store.Session, message: str = ""):
         project = os.path.basename((sess.cwd or "").rstrip("\\/")) or "your session"
         title, body = TOAST[kind]
-        message = event.get("message") or ""
         # The CLI's own message is already a sentence; it just never says where.
         body = "%s — in %s" % (message.rstrip(". "), project) if message else body % project
         if self.settings["toasts"]:
@@ -422,9 +448,9 @@ class Tray:
                 self.icon.notify(_fit(body, 170), _fit(title % tool_name(sess.tool), 56))
             except Exception:
                 pass
-        if self.settings["flash"] and kind in ("done", "permission"):
+        if self.settings["flash"] and kind != "aborted":
             try:
-                winui.flash_for_pid(sess.pid)
+                winui.flash_for_pid(sess.pid, sess.cwd)
             except Exception:
                 pass
 
@@ -448,6 +474,7 @@ class Tray:
                 self.announce(event, sess)
 
         self.sessions.reconcile()
+        self.remind()
         state = self.sessions.aggregate()
         active = self.sessions.active()
         agents = self.sessions.agent_count()

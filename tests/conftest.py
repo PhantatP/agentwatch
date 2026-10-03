@@ -48,6 +48,25 @@ def write_rows(path, *rows, age=0.0):
 write_rows.tick = 0
 
 
+class _FakeIcon:
+    """Stands in for pystray.Icon. A real one registers a Win32 window class
+    named after its id(); tests create many, and a reused id collides
+    ("Class already exists")."""
+
+    def __init__(self, *args, **kwargs):
+        self.icon, self.title = None, ""
+
+    def notify(self, body, title=""):
+        pass
+
+
+@pytest.fixture(autouse=True)
+def no_real_tray_icon(monkeypatch):
+    from agentwatch import tray
+
+    monkeypatch.setattr(tray.pystray, "Icon", _FakeIcon)
+
+
 @pytest.fixture
 def events(tmp_path, monkeypatch):
     """An empty event log, and a helper that appends one event for session S

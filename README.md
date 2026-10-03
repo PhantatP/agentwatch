@@ -113,8 +113,22 @@ when it wakes to read one agent's result — is silent. You get one "done" when
 the last agent has finished and the main agent wraps up.
 
 Nothing is shown when the window hosting the session is already in front — you
-are looking at it. For VS Code that means any VS Code window, since they all
-belong to one process.
+are looking at it. A *different* window of the same app does not count: every
+VS Code window belongs to one `Code.exe` process, so the session's window is
+picked by title, which carries its workspace folder
+(`tray.py - indicator - Visual Studio Code`). Work in one VS Code window and a
+session finishing in another still notifies you, and the flash lands on its
+window. When the titles cannot tell the windows apart (a renamed title, a
+multi-root workspace), you are notified rather than missed.
+
+In front is not the same as looked at, though, so a wait you got no toast for
+is reminded once it goes unanswered: after **1 minute** for a permission prompt,
+**3 minutes** for a finished turn — "Claude still needs your go-ahead" / "Claude
+is still waiting on you". That covers a session whose window was in front, and
+Claude's permission prompts, which never toast. Each wait is reminded once, and
+only while nothing has changed: a reply, or work resuming after the prompt,
+cancels it. A wait you were already toasted for, a turn you interrupted, and
+waits from before the tray started are not reminded.
 
 A "done" is also held for 3 seconds and dropped if the session starts another
 turn in that time: a queued message, or an agent's result arriving just as the
