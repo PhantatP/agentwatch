@@ -20,10 +20,21 @@ USAGE_SECONDS = 20.0
 DONE_GRACE = 3.0  # hold a "done" this long in case the next turn starts at once
 
 COLORS = {
-    "running": (56, 132, 255),   # blue  -- agent is working
+    "running": (56, 132, 255),   # blue  -- agent is working (a tool not in TOOL_COLORS)
     "waiting": (255, 170, 0),    # amber -- agent wants you
     "idle": (46, 184, 114),      # green -- session open, turn finished
     "none": (130, 136, 148),     # grey  -- nothing running
+}
+
+# The running arc takes the colour of the company behind the tool at work, so
+# you can tell which one it is. OpenAI's well-known green would read as the
+# green "idle" ring, so Codex takes OpenAI's monochrome instead -- an off-white
+# that suits the dark taskbar but would fade on a light one.
+# Order is the order of segments when several tools are working at once.
+TOOL_COLORS = {
+    "claude": (217, 119, 87),        # Claude orange, #D97757
+    "codex": (236, 236, 241),        # OpenAI off-white, #ECECF1
+    "antigravity": (66, 133, 244),   # Google blue, #4285F4
 }
 
 DEFAULT_SETTINGS = {"toasts": True, "flash": True}
@@ -64,7 +75,7 @@ def _font(pixels: int):
     return ImageFont.load_default()
 
 
-def make_icon(state: str, count: int, agents: int = 0, size: int = 64) -> Image.Image:
+def make_icon(state: str, count: int, agents: int = 0, size: int = 64, tools=()) -> Image.Image:
     """A crisp state glyph. Shape carries the state as well as colour, so it
     still reads when the tray is small or the user cannot separate the hues."""
     scale = size * SUPERSAMPLE
@@ -80,13 +91,22 @@ def make_icon(state: str, count: int, agents: int = 0, size: int = 64) -> Image.
     stroke = scale * 0.17
 
     if state == "running":
-        # an open arc reads as motion
-        draw.arc(box, start=135, end=45, fill=color, width=int(stroke))
+        # an open arc reads as motion; one segment per tool at work, in its colour
+        hues = [TOOL_COLORS.get(tool, COLORS["running"]) + (255,) for tool in tools] or [color]
+        span = 270 / len(hues)
+        gap = 7  # degrees cut from each side of a seam, so adjacent hues stay apart
+        # With a badge, turn the arc's opening to face it, so the badge covers
+        # the gap instead of the last tool's segment.
+        first = 90 if count > 1 else 135
+        for i, hue in enumerate(hues):
+            start = first + i * span + (gap if i else 0)
+            end = first + (i + 1) * span - (gap if i < len(hues) - 1 else 0)
+            draw.arc(box, start=start, end=end, fill=hue, width=int(stroke))
         if agents:
             # a core inside the arc: subagents are working too. One dot, not one
             # per agent -- more than one blurs together at 16px.
             centre, radius = (box[0] + box[2]) / 2, scale * 0.13
-            draw.ellipse((centre - radius, centre - radius, centre + radius, centre + radius), fill=color)
+            draw.ellipse((centre - radius, centre - radius, centre + radius, centre + radius), fill=hues[0])
     elif state == "waiting":
         draw.ellipse(box, fill=color)  # solid: demands attention
     elif state == "idle":
@@ -382,7 +402,12 @@ class Tray:
         state = self.sessions.aggregate()
         active = self.sessions.active()
         agents = self.sessions.agent_count()
-        self.icon.icon = make_icon(state, len(active), agents)
+        order = list(TOOL_COLORS)
+        tools = sorted(
+            {s.tool for s in active if s.state == "running"},
+            key=lambda t: (order.index(t) if t in order else len(order), t),
+        )
+        self.icon.icon = make_icon(state, len(active), agents, tools=tools)
         # A Windows tooltip is capped at 127 characters, so build it in priority
         # order and stop before it would be cut mid-word.
         headline = {

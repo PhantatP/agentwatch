@@ -75,20 +75,26 @@ def main() -> int:
     if "--event" in argv:  # lets a config pin the event name explicitly
         event = argv[argv.index("--event") + 1]
 
+    # Antigravity names these differently: conversationId, workspacePaths, modelName.
+    workspaces = payload.get("workspacePaths")
+    workspace = workspaces[0] if isinstance(workspaces, list) and workspaces else ""
     store.append(
         {
             "tool": tool,
-            "session": payload.get("session_id") or payload.get("sessionId") or "unknown",
+            "session": payload.get("session_id")
+            or payload.get("sessionId")
+            or payload.get("conversationId")
+            or "unknown",
             "event": event,
-            "cwd": payload.get("cwd") or os.getcwd(),
+            "cwd": payload.get("cwd") or workspace or os.getcwd(),
             "pid": _owner_pid(),
-            "model": payload.get("model") or "",
+            "model": payload.get("model") or payload.get("modelName") or "",
             "message": payload.get("message") or "",
             "transcript": payload.get("transcript_path") or payload.get("transcriptPath") or "",
         }
     )
 
-    if event in ("SessionStart", "UserPromptSubmit"):
+    if event in ("SessionStart", "UserPromptSubmit", "PreInvocation"):
         _spawn_tray()
     return 0
 

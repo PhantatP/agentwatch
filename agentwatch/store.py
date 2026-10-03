@@ -19,6 +19,7 @@ STATUS_BY_EVENT = {
     "UserPromptSubmit": "running",
     "PreToolUse": "running",
     "PostToolUse": "running",
+    "PreInvocation": "running",  # Antigravity: before each model call
     "PermissionRequest": "waiting",
     "Notification": "waiting",
     "Stop": "idle",
@@ -155,7 +156,7 @@ class Sessions:
         """Correct `running` sessions that actually stopped.
 
         Neither CLI emits an event when you hit Esc or close the terminal, so
-        without this a stopped session stays blue forever. Two independent
+        without this a stopped session shows as working forever. Two independent
         checks: the owning process is gone, or the transcript says the turn
         ended. Never promotes a session back to running -- events do that.
         """

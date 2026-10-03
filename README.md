@@ -1,6 +1,7 @@
 # agentwatch
 
-A tray indicator and notifier for Claude Code and Codex sessions on Windows.
+A tray indicator and notifier for Claude Code, Codex, and Antigravity sessions on
+Windows.
 It shows whether an agent is working, waiting on you, or idle, notifies you when
 a turn ends, and reports token usage.
 
@@ -16,11 +17,24 @@ not depend on telling the hues apart:
 
 | Icon | Colour | Meaning |
 | --- | --- | --- |
-| Open arc | Blue | An agent is working |
-| Open arc with a centre dot | Blue | An agent is working, and its subagents are too |
+| Open arc | The tool's company colour | An agent is working |
+| Open arc with a centre dot | The tool's company colour | An agent is working, and its subagents are too |
 | Filled disc | Amber | An agent needs you: a question, a permission prompt, or an idle wait |
 | Ring | Green | Session open, turn finished |
 | Thin outline | Grey | Nothing running |
+
+The working arc tells you *which* agent is working by its company colour:
+
+| Tool | Arc colour |
+| --- | --- |
+| Claude Code | Claude orange `#D97757` |
+| Codex | OpenAI off-white `#ECECF1` — OpenAI's green would read as the green "idle" ring |
+| Antigravity | Google blue `#4285F4` |
+
+When more than one tool is working, the arc splits into one segment per tool,
+always in that order, and turns its opening toward the session badge so the
+badge never hides a segment. Codex's off-white suits a dark taskbar; on a light
+one it fades.
 
 The glyph is drawn at 8x and downsampled, so it stays crisp at every DPI. A
 numbered badge appears when more than one session is live. Hover for a tooltip;
@@ -69,8 +83,8 @@ and a taskbar flash on the terminal window that owns the session — found by
 walking up the process tree from the agent CLI, so it works under Windows
 Terminal, pwsh, and VS Code alike.
 
-Subagents do not notify. While a Claude session has subagents running it stays
-blue, and the main agent's `Stop` — both when it pauses to wait and
+Subagents do not notify. While a Claude session has subagents running it keeps
+its working arc, and the main agent's `Stop` — both when it pauses to wait and
 when it wakes to read one agent's result — is silent. You get one "done" when
 the last agent has finished and the main agent wraps up.
 
@@ -84,7 +98,7 @@ main agent stopped, means it was not really done.
 
 | Event | Notification |
 | --- | --- |
-| `Stop` | "Finished" |
+| `Stop` (all three) | "Finished" |
 | `PermissionRequest` (Codex) | "Asking permission" |
 | `Interrupt` (Codex) | "Interrupted" |
 
@@ -118,12 +132,15 @@ Requires Python 3.11+ and `pystray` (`pip install pystray`; Pillow comes with it
 python install.py
 ```
 
-This writes hooks into `~/.claude/settings.json` and `~/.codex/hooks.json`,
-backing up each file first. It only ever touches entries carrying its own
-`--source agentwatch` marker, so your existing hooks are left alone, and
-re-running it replaces rather than duplicates.
+This writes hooks into `~/.claude/settings.json`, `~/.codex/hooks.json`, and —
+if `~/.gemini` exists — Antigravity's `~/.gemini/config/hooks.json`, backing up
+each file first. It only ever touches entries carrying its own
+`--source agentwatch` marker (in Antigravity's file, its own `agentwatch` group),
+so your existing hooks are left alone, and re-running it replaces rather than
+duplicates.
 
-**Restart Claude Code and Codex afterwards** — both read hook config at startup.
+**Restart Claude Code, Codex, and Antigravity afterwards** — they read hook
+config at startup.
 
 The tray starts itself on the next agent turn: the `SessionStart` and
 `UserPromptSubmit` hooks launch it (as `pythonw.exe`, so no console window) if it
@@ -202,7 +219,18 @@ need no running CLI and never touch your real `%LOCALAPPDATA%\agentwatch`.
   not from hooks: `SubagentStart` does not fire for background agents, which are
   the ones that matter. One is live while its tail says mid-turn — a finished one
   ends in `end_turn` or a tool result marked `toolEndsTurn`. One silent for 15
-  minutes is presumed killed, so an agent lost to Esc cannot hold the icon blue.
+  minutes is presumed killed, so an agent lost to Esc cannot hold the icon in its
+  working state.
+- Antigravity support follows [its hooks docs](https://antigravity.google/docs/hooks/)
+  and is untested against a live Antigravity — it was not installed when this was
+  written. It has no prompt-submit event, so `PreInvocation` (before each model
+  call) marks the turn as working and `Stop` ends it. Its hooks are synchronous,
+  so each model call waits the ~130ms the hook takes. Its payload names differ
+  (`conversationId`, `workspacePaths`, `modelName`) and carries no event name, so
+  the command passes `--event`. Which shell it runs hooks in on Windows is not
+  documented, so the command uses forward slashes and no quotes, which read the
+  same in cmd, PowerShell, and bash. Its conversations are stored encrypted, so
+  the transcript checks above, and the activity row, do not apply to it.
 - "Whose process" means the agent CLI, not the hook's direct parent. Claude Code
   runs each hook through a shell (`bash.exe` with Git Bash) that exits with the
   hook, so the hook walks past any shell ancestors and records the CLI's pid.

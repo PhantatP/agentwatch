@@ -5,6 +5,7 @@ from pathlib import Path
 HOME = Path(os.path.expanduser("~"))
 CLAUDE_HOME = Path(os.environ.get("CLAUDE_CONFIG_DIR") or HOME / ".claude")
 CODEX_HOME = Path(os.environ.get("CODEX_HOME") or HOME / ".codex")
+GEMINI_HOME = HOME / ".gemini"  # Antigravity's config lives under it
 
 CLAUDE_PROJECTS = CLAUDE_HOME / "projects"
 CODEX_SESSIONS = CODEX_HOME / "sessions"

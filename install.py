@@ -35,6 +35,10 @@ CODEX_EVENTS = [
     "SessionEnd",
 ]
 
+# Antigravity has no prompt-submit event: PreInvocation fires before every model
+# call, so it marks the turn as working, and Stop fires when the run ends.
+ANTIGRAVITY_EVENTS = ["PreInvocation", "Stop"]
+
 
 def python_exe() -> str:
     return sys.executable
@@ -153,6 +157,36 @@ def install_codex(remove: bool) -> str:
     return str(target)
 
 
+def antigravity_command(event: str) -> str:
+    # Which shell Antigravity runs hooks in on Windows is not documented. Forward
+    # slashes and no quotes (unless a path has spaces) read the same in cmd,
+    # PowerShell, and bash; a quoted path is not a command in PowerShell.
+    def arg(path) -> str:
+        text = str(path).replace(chr(92), "/")
+        return '"%s"' % text if " " in text else text
+
+    return "%s %s --tool antigravity --event %s --source %s" % (
+        arg(python_exe()), arg(HOOK_ENTRY), event, MARKER)
+
+
+def install_antigravity(remove: bool) -> str:
+    # One hooks.json, shared by the Antigravity IDE, CLI, and app. Its top level
+    # is named groups, so ours is the "agentwatch" group and nothing else is touched.
+    if not paths.GEMINI_HOME.exists():
+        return "skipped (Antigravity not found)"
+    target = paths.GEMINI_HOME / "config" / "hooks.json"
+    config = load_json(target)
+    backup(target)
+    config.pop(MARKER, None)
+    if not remove:
+        config[MARKER] = {
+            event: [{"type": "command", "command": antigravity_command(event), "timeout": 10}]
+            for event in ANTIGRAVITY_EVENTS
+        }
+    write_json(target, config)
+    return str(target)
+
+
 def main(argv) -> int:
     remove = "--uninstall" in argv
     if not HOOK_ENTRY.exists():
@@ -162,6 +196,7 @@ def main(argv) -> int:
     print(("Removing" if remove else "Installing") + " agentwatch hooks")
     print("  claude -> " + install_claude(remove))
     print("  codex  -> " + install_codex(remove))
+    print("  antigravity -> " + install_antigravity(remove))
     print("  state  -> " + str(paths.DATA))
     if not remove:
         print(chr(10) + "The tray starts itself on the next agent turn.")

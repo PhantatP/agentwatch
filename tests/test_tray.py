@@ -86,6 +86,35 @@ def test_icon_marks_agents_with_a_centre_dot():
     assert tray.make_icon("running", 1, agents=2).getpixel(centre)[3] == 255
 
 
+def _on_arc(image, degrees):
+    """The pixel mid-stroke on the arc at `degrees` (clockwise from 3 o'clock)."""
+    import math
+
+    box_edge = 64 * 0.09
+    far = 64 - box_edge - 64 * 0.17  # the glyph shrinks when a badge is shown
+    centre = (box_edge + far) / 2
+    radius = (far - box_edge) / 2 - 64 * 0.17 / 2
+    x = centre + radius * math.cos(math.radians(degrees))
+    y = centre + radius * math.sin(math.radians(degrees))
+    return image.getpixel((round(x), round(y)))[:3]
+
+
+def test_running_arc_takes_each_tools_colour():
+    icon = tray.make_icon("running", 2, tools=["claude", "codex"])
+    assert _on_arc(icon, 180) == tray.TOOL_COLORS["claude"]
+    assert _on_arc(icon, 300) == tray.TOOL_COLORS["codex"]
+
+
+def test_tick_colours_the_arc_by_running_tool(events, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(tray, "make_icon", lambda *a, **kw: seen.update(kw) or tray.Image.new("RGBA", (1, 1)))
+    t = tray.Tray()
+    events("UserPromptSubmit", sid="A", tool="codex")
+    events("UserPromptSubmit", sid="B", tool="claude")
+    t.tick()
+    assert seen["tools"] == ["claude", "codex"]  # fixed order, so colours do not jump
+
+
 def test_fit_trims_on_a_word_boundary():
     assert tray._fit("short", 10) == "short"
     assert tray._fit("one two three four", 16) == "one two three…"
