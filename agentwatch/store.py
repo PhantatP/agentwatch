@@ -30,7 +30,6 @@ STATUS_BY_EVENT = {
 # each kind lives in the tray, which is the only thing that shows it.
 NOTIFY_BY_EVENT = {
     "Stop": "done",
-    "Notification": "input",
     "PermissionRequest": "permission",
     "Interrupt": "aborted",
 }

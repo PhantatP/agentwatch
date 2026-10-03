@@ -126,7 +126,6 @@ DOT = {"running": "◐", "waiting": "●", "idle": "○", "none": "○"}
 # person would say it: the title names who wants what, the body says where.
 TOAST = {
     "done": ("%s is done", "Wrapped up in %s — it's back to you."),
-    "input": ("%s needs you", "It's waiting on an answer in %s."),
     "permission": ("%s is asking first", "It wants your go-ahead before acting in %s."),
     "aborted": ("%s stopped", "You cut the turn short in %s."),
 }
@@ -322,7 +321,7 @@ class Tray:
                 self.icon.notify(_fit(body, 170), _fit(title % tool_name(sess.tool), 56))
             except Exception:
                 pass
-        if self.settings["flash"] and kind in ("done", "input", "permission"):
+        if self.settings["flash"] and kind in ("done", "permission"):
             try:
                 winui.flash_for_pid(sess.pid)
             except Exception:

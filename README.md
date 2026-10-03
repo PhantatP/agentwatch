@@ -63,7 +63,7 @@ Terminal, pwsh, and VS Code alike.
 | Event | Notification |
 | --- | --- |
 | `Stop` | "Finished" |
-| `Notification` (Claude) / `PermissionRequest` (Codex) | "Needs your input" / "Asking permission" |
+| `PermissionRequest` (Codex) | "Asking permission" |
 | `Interrupt` (Codex) | "Interrupted" |
 
 Neither CLI emits a distinct *error* event. A failed turn still ends in `Stop`,
