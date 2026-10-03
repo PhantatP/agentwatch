@@ -17,6 +17,7 @@ not depend on telling the hues apart:
 | Icon | Colour | Meaning |
 | --- | --- | --- |
 | Open arc | Blue | An agent is working |
+| Open arc with a centre dot | Blue | An agent is working, and its subagents are too |
 | Filled disc | Amber | An agent needs you: a question, a permission prompt, or an idle wait |
 | Ring | Green | Session open, turn finished |
 | Thin outline | Grey | Nothing running |
@@ -28,7 +29,10 @@ right-click for the full breakdown:
 ```
 SESSIONS
   ● codex   my-ai-workflows · needs you · 8s
-  ◐ claude  indicator · running · 1m12s
+  ◐ claude  indicator · running · 1m12s · 2 agents
+        Edit tray.py
+        ↳ reviewer · Falsify core.py fixes — Bash Run tests
+        ↳ Explore · Find hook wiring — thinking
 ────────────────────────────────────────────
 CLAUDE
   ●●○○○○○○   28%   5h block · resets 4h04m
@@ -53,12 +57,30 @@ are all one width, which keeps the columns aligned in the proportional font
 Windows uses for tray menus. Clicking a session flashes the terminal that owns
 it; clicking a usage row refreshes.
 
+Under a running session is what it is doing now — the tool it is in and what
+that tool is acting on, or `thinking` / `writing` between tools — and one `↳`
+row per live subagent, named from its type and task. All of it comes from the
+transcript tails the tray already reads, so it adds nothing to hook latency.
+
 ## Notifications
 
 On every turn end you get a Windows toast (which persists in the Action Center)
 and a taskbar flash on the terminal window that owns the session — found by
 walking up the process tree from the agent CLI, so it works under Windows
 Terminal, pwsh, and VS Code alike.
+
+Subagents do not notify. While a Claude session has subagents running it stays
+blue, and the main agent's `Stop` — both when it pauses to wait and
+when it wakes to read one agent's result — is silent. You get one "done" when
+the last agent has finished and the main agent wraps up.
+
+Nothing is shown when the window hosting the session is already in front — you
+are looking at it. For VS Code that means any VS Code window, since they all
+belong to one process.
+
+A "done" is also held for 3 seconds and dropped if the session starts another
+turn in that time: a queued message, or an agent's result arriving just as the
+main agent stopped, means it was not really done.
 
 | Event | Notification |
 | --- | --- |
@@ -163,6 +185,11 @@ OneDrive, so it does not generate sync traffic:
   the tray rather than left stuck. It re-reads the transcript tail: a turn that
   ended writes `stop_reason: end_turn`, an interrupted one writes
   `[Request interrupted by user]`. It also drops any session whose process is gone.
+- Subagents are read from their own transcripts, `<session>/subagents/agent-<id>.jsonl`,
+  not from hooks: `SubagentStart` does not fire for background agents, which are
+  the ones that matter. One is live while its tail says mid-turn — a finished one
+  ends in `end_turn` or a tool result marked `toolEndsTurn`. One silent for 15
+  minutes is presumed killed, so an agent lost to Esc cannot hold the icon blue.
 - "Whose process" means the agent CLI, not the hook's direct parent. Claude Code
   runs each hook through a shell (`bash.exe` with Git Bash) that exits with the
   hook, so the hook walks past any shell ancestors and records the CLI's pid.

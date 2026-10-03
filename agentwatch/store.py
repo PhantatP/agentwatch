@@ -100,6 +100,13 @@ class Session:
     status: str = "idle"
     since: float = field(default_factory=time.time)
     last_event: str = ""
+    agents: dict = field(default_factory=dict)  # mid-turn subagent id -> transcript
+
+    @property
+    def state(self) -> str:
+        """Status as shown. A turn that ended while its background agents
+        still work has not really finished, so it reads as running."""
+        return "running" if self.agents and self.status == "idle" else self.status
 
 
 class Sessions:
@@ -131,8 +138,14 @@ class Sessions:
                 sess.status = status
                 sess.since = ev.get("ts", time.time())
             sess.last_event = name
+            if name == "Stop":
+                sess.agents = transcript.live_agents(sess.transcript)
             if status == "ended":
                 self.by_key.pop(key, None)
+            elif name == "Stop" and sess.agents:
+                # The main agent paused to wait on its agents -- or woke to read
+                # one agent's result. Only the Stop after the last one is "done".
+                continue
             elif name in NOTIFY_BY_EVENT:
                 notifications.append((ev, sess))
         self._drop_stale()
@@ -150,6 +163,7 @@ class Sessions:
             if sess.pid and not proc.process_alive(sess.pid):
                 del self.by_key[key]
                 continue
+            sess.agents = transcript.live_agents(sess.transcript)
             if sess.status != "running":
                 continue
             if transcript.turn_state(sess.transcript) == "idle":
@@ -164,10 +178,13 @@ class Sessions:
 
     def active(self):
         order = {"waiting": 0, "running": 1, "idle": 2}
-        return sorted(self.by_key.values(), key=lambda s: (order.get(s.status, 3), -s.since))
+        return sorted(self.by_key.values(), key=lambda s: (order.get(s.state, 3), -s.since))
+
+    def agent_count(self) -> int:
+        return sum(len(s.agents) for s in self.by_key.values())
 
     def aggregate(self) -> str:
-        statuses = {s.status for s in self.by_key.values()}
+        statuses = {s.state for s in self.by_key.values()}
         if "waiting" in statuses:
             return "waiting"
         if "running" in statuses:

@@ -50,6 +50,16 @@ def _windows_by_pid() -> dict:
     return found
 
 
+def is_foreground(pid: int) -> bool:
+    """Whether the window in front belongs to the terminal hosting `pid` --
+    i.e. you are already looking at the session."""
+    if not pid:
+        return False
+    owner = wintypes.DWORD()
+    _user32.GetWindowThreadProcessId(_user32.GetForegroundWindow(), ctypes.byref(owner))
+    return owner.value in [pid] + proc.parent_chain(pid)
+
+
 def flash_for_pid(pid: int, count: int = 4) -> bool:
     """Flash the terminal hosting `pid`. Returns whether a window was found."""
     if not pid:

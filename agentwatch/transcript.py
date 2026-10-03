@@ -11,11 +11,13 @@ user tool_result. An interrupt is written as a user message containing
 """
 import json
 import os
+import time
 
 TAIL_BYTES = 64 * 1024
+AGENT_QUIET = 15 * 60  # longer than the 10-minute cap on a single tool call
 INTERRUPT_MARKERS = ("Request interrupted", "[Request interrupted by user]")
 
-_cache: dict = {}  # path -> (mtime, size, state)
+_cache: dict = {}  # path -> ((mtime, size), (state, activity))
 
 
 def _tail(path: str) -> str:
@@ -39,8 +41,39 @@ def _text_of(content) -> str:
     return ""
 
 
+def _tool_label(block: dict) -> str:
+    """'Edit tray.py', 'Bash Run tests' -- the tool, plus what it is acting on."""
+    args = block.get("input") or {}
+    detail = (
+        os.path.basename(str(args.get("file_path") or ""))
+        or args.get("description")
+        or args.get("pattern")
+        or ""
+    )
+    name = block.get("name") or "tool"
+    return "%s %s" % (name, detail) if detail else name
+
+
+def _activity(obj: dict) -> str:
+    """What the agent is doing, judged from its latest transcript entry."""
+    content = obj["message"].get("content")
+    if obj.get("type") == "assistant" and isinstance(content, list):
+        for block in reversed(content):
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                return _tool_label(block)
+            if isinstance(block, dict) and block.get("type") == "text":
+                return "writing"
+    return "thinking"  # mid-reasoning, or waiting on the model after a tool result
+
+
 def _state_from_text(text: str):
-    """-> 'running' | 'idle' | None (undetermined)."""
+    """-> (state, activity). State is 'running' | 'idle' | None (undetermined);
+    activity is '' unless running."""
+    state, entry = _state_and_entry(text)
+    return state, (_activity(entry) if state == "running" else "")
+
+
+def _state_and_entry(text: str):
     for line in reversed(text.splitlines()):
         if '"message"' not in line:
             continue
@@ -56,29 +89,89 @@ def _state_from_text(text: str):
             continue
         if kind == "assistant":
             # end_turn means the turn finished; tool_use means it is still going.
-            return "idle" if message.get("stop_reason") == "end_turn" else "running"
+            return ("idle" if message.get("stop_reason") == "end_turn" else "running"), obj
+        if obj.get("toolEndsTurn"):
+            return "idle", obj  # a subagent's hand-back: its last act is a tool call
         body = _text_of(message.get("content"))
         if any(marker in body for marker in INTERRUPT_MARKERS):
-            return "idle"
-        return "running"  # a prompt or a tool result: the agent is working
-    return None
+            return "idle", obj
+        return "running", obj  # a prompt or a tool result: the agent is working
+    return None, None
 
 
-def turn_state(path: str):
-    """Cached per (mtime, size) so a 1s poll costs nothing when nothing changed."""
+def _summary(path: str):
+    """-> (state, activity), cached per (mtime, size) so a 1s poll costs
+    nothing when nothing changed."""
     if not path:
-        return None
+        return None, ""
     try:
         stat = os.stat(path)
     except OSError:
-        return None
+        return None, ""
     key = (stat.st_mtime, stat.st_size)
     cached = _cache.get(path)
     if cached and cached[0] == key:
         return cached[1]
     try:
-        state = _state_from_text(_tail(path))
+        summary = _state_from_text(_tail(path))
     except OSError:
-        return None
-    _cache[path] = (key, state)
-    return state
+        return None, ""
+    _cache[path] = (key, summary)
+    return summary
+
+
+def turn_state(path: str):
+    return _summary(path)[0]
+
+
+def activity(path: str) -> str:
+    """What a running agent is doing right now, e.g. 'Edit tray.py'; '' if idle."""
+    return _summary(path)[1]
+
+
+_labels: dict = {}  # agent transcript path -> label; an agent's meta never changes
+
+
+def agent_label(path: str) -> str:
+    """'reviewer · Falsify core.py fixes', from the agent's sidecar meta file."""
+    if path not in _labels:
+        try:
+            with open(path[: -len(".jsonl")] + ".meta.json", "r", encoding="utf-8") as fh:
+                meta = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            meta = {}
+        if not isinstance(meta, dict):
+            meta = {}
+        parts = [meta.get("agentType"), meta.get("description")]
+        _labels[path] = " · ".join(str(p) for p in parts if p) or "agent"
+    return _labels[path]
+
+
+def live_agents(path: str) -> dict:
+    """Subagents of a session that are still mid-turn, as {id: transcript path}.
+
+    Read from their own transcripts, `<session>/subagents/agent-<id>.jsonl`,
+    because hooks cannot track them: SubagentStart does not fire for background
+    agents. One silent for AGENT_QUIET is presumed killed, not still working.
+    """
+    live = {}
+    if not path:
+        return live
+    folder = os.path.join(os.path.splitext(path)[0], "subagents")
+    cutoff = time.time() - AGENT_QUIET
+    try:
+        entries = list(os.scandir(folder))
+    except OSError:
+        return live
+    for entry in entries:
+        name = entry.name
+        if not (name.startswith("agent-") and name.endswith(".jsonl")):
+            continue
+        try:
+            if entry.stat().st_mtime < cutoff:
+                continue
+        except OSError:
+            continue
+        if turn_state(entry.path) == "running":
+            live[name[len("agent-"):-len(".jsonl")]] = entry.path
+    return live

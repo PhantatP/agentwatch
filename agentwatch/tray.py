@@ -13,10 +13,11 @@ import time
 from PIL import Image, ImageDraw, ImageFont
 import pystray
 
-from . import limits, paths, store, usage, winui
+from . import limits, paths, store, transcript, usage, winui
 
 POLL_SECONDS = 1.0
 USAGE_SECONDS = 20.0
+DONE_GRACE = 3.0  # hold a "done" this long in case the next turn starts at once
 
 COLORS = {
     "running": (56, 132, 255),   # blue  -- agent is working
@@ -63,7 +64,7 @@ def _font(pixels: int):
     return ImageFont.load_default()
 
 
-def make_icon(state: str, count: int, size: int = 64) -> Image.Image:
+def make_icon(state: str, count: int, agents: int = 0, size: int = 64) -> Image.Image:
     """A crisp state glyph. Shape carries the state as well as colour, so it
     still reads when the tray is small or the user cannot separate the hues."""
     scale = size * SUPERSAMPLE
@@ -81,6 +82,11 @@ def make_icon(state: str, count: int, size: int = 64) -> Image.Image:
     if state == "running":
         # an open arc reads as motion
         draw.arc(box, start=135, end=45, fill=color, width=int(stroke))
+        if agents:
+            # a core inside the arc: subagents are working too. One dot, not one
+            # per agent -- more than one blurs together at 16px.
+            centre, radius = (box[0] + box[2]) / 2, scale * 0.13
+            draw.ellipse((centre - radius, centre - radius, centre + radius, centre + radius), fill=color)
     elif state == "waiting":
         draw.ellipse(box, fill=color)  # solid: demands attention
     elif state == "idle":
@@ -131,6 +137,10 @@ TOAST = {
 }
 
 
+def agents_note(n: int) -> str:
+    return " · %d agent%s" % (n, "" if n == 1 else "s") if n else ""
+
+
 def tool_name(tool: str) -> str:
     return {"claude": "Claude", "codex": "Codex"}.get(tool, tool.capitalize())
 
@@ -148,6 +158,11 @@ def _fit(text: str, limit: int) -> str:
     return cut.rstrip(" ,.;:—-") + "…"
 
 
+def _menu_text(text: str) -> str:
+    """Windows reads a lone & in a menu item as a keyboard-shortcut marker."""
+    return text.replace("&", "&&")
+
+
 def _noop(_icon=None, _item=None):
     """Placeholder action: an enabled row renders in normal text, not grey."""
 
@@ -160,6 +175,7 @@ class Tray:
         self.usage_error = ""
         self.claude_limits = limits.ClaudeLimits()
         self.first_poll = True
+        self.held = []  # notifications not yet announced
         self.started = time.time()
         self.stopping = threading.Event()
         self.icon = pystray.Icon(
@@ -182,16 +198,27 @@ class Tray:
         for sess in active:
             project = os.path.basename(sess.cwd.rstrip("\\/")) or sess.cwd
             yield item(
-                "  %s %-6s  %s · %s · %s"
+                "  %s %-6s  %s · %s · %s%s"
                 % (
-                    DOT.get(sess.status, "○"),
+                    DOT.get(sess.state, "○"),
                     sess.tool,
                     project[:22],
-                    LABEL.get(sess.status, sess.status),
+                    LABEL.get(sess.state, sess.state),
                     short_age(sess.since),
+                    agents_note(len(sess.agents)),
                 ),
                 self.reveal(sess.pid),
             )
+            if sess.status == "running":
+                doing = transcript.activity(sess.transcript)
+                if doing:
+                    yield item("        " + _menu_text(_fit(doing, 48)), self.reveal(sess.pid))
+            for path in sess.agents.values():
+                line = _fit(transcript.agent_label(path), 44)
+                doing = transcript.activity(path)
+                if doing:
+                    line += " — " + _fit(doing, 32)
+                yield item("        ↳ " + _menu_text(line), self.reveal(sess.pid))
 
         yield pystray.Menu.SEPARATOR
         for header, rows in self.usage_sections():
@@ -310,6 +337,11 @@ class Tray:
     # ---------- notifications ----------
 
     def announce(self, event: dict, sess: store.Session):
+        try:
+            if winui.is_foreground(sess.pid):
+                return  # you are already looking at it
+        except Exception:
+            pass
         kind = store.NOTIFY_BY_EVENT[event.get("event", "")]
         project = os.path.basename((sess.cwd or "").rstrip("\\/")) or "your session"
         title, body = TOAST[kind]
@@ -335,27 +367,36 @@ class Tray:
             # Rebuild state from history without replaying old notifications.
             self.first_poll = False
             pending = [pair for pair in pending if pair[0].get("ts", 0) >= self.started]
-        for event, sess in pending:
-            self.announce(event, sess)
+        self.held += pending
+        now = time.time()
+        for event, sess in list(self.held):
+            if event.get("event") == "Stop" and sess.last_event != "Stop":
+                # A new turn began right after this Stop -- a queued message or
+                # an agent's result waking the main agent -- so it is not done.
+                self.held.remove((event, sess))
+            elif event.get("event") != "Stop" or now - event.get("ts", now) >= DONE_GRACE:
+                self.held.remove((event, sess))
+                self.announce(event, sess)
 
         self.sessions.reconcile()
         state = self.sessions.aggregate()
         active = self.sessions.active()
-        self.icon.icon = make_icon(state, len(active))
+        agents = self.sessions.agent_count()
+        self.icon.icon = make_icon(state, len(active), agents)
         # A Windows tooltip is capped at 127 characters, so build it in priority
         # order and stop before it would be cut mid-word.
         headline = {
-            "running": "%d running" % sum(s.status == "running" for s in active),
+            "running": "%d running" % sum(s.state == "running" for s in active),
             "waiting": "needs you",
             "idle": "%d idle" % len(active),
             "none": "no sessions",
         }.get(state, state)
-        lines = ["agentwatch · " + headline]
+        lines = ["agentwatch · " + headline + agents_note(agents)]
         for sess in active[:3]:
             project = os.path.basename(sess.cwd.rstrip("\\/")) or sess.cwd
             lines.append(
                 "%s %s %s %s"
-                % (DOT.get(sess.status, ""), project[:18], LABEL.get(sess.status, ""), short_age(sess.since))
+                % (DOT.get(sess.state, ""), project[:18], LABEL.get(sess.state, ""), short_age(sess.since))
             )
         percents = " · ".join(
             "%s %.0f%%" % (w["label"], w["percent"]) for w in self.claude_limits.windows[:2]
