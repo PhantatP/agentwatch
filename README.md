@@ -28,13 +28,13 @@ The working arc tells you *which* agent is working by its company colour:
 | Tool | Arc colour |
 | --- | --- |
 | Claude Code | Claude orange `#D97757` |
-| Codex | OpenAI off-white `#ECECF1` — OpenAI's green would read as the green "idle" ring |
+| Codex | OpenAI off-white `#ECECF1`, or OpenAI black `#0D0D0D` on a light taskbar — OpenAI's green would read as the green "idle" ring |
 | Antigravity | Google blue `#4285F4` |
 
 When more than one tool is working, the arc splits into one segment per tool,
 always in that order, and turns its opening toward the session badge so the
-badge never hides a segment. Codex's off-white suits a dark taskbar; on a light
-one it fades.
+badge never hides a segment. The taskbar theme is read from the registry on
+every refresh, so switching it recolours Codex straight away.
 
 The glyph is drawn at 8x and downsampled, so it stays crisp at every DPI. A
 numbered badge appears when more than one session is live. Hover for a tooltip;
@@ -56,6 +56,9 @@ CODEX
 TOKENS
   today   claude 50.1M · codex 0
   7 days  claude 54.1M · codex 0
+HOOKS
+  claude  last event 2m ago
+! codex   hooks not firing · used 11m ago, last event 15d ago · check trust in codex /hooks
 ────────────────────────────────────────────
 ✓ Toasts
 ✓ Flash taskbar
@@ -70,6 +73,17 @@ enabled and renders in normal text. Each meter leads its row because its glyphs
 are all one width, which keeps the columns aligned in the proportional font
 Windows uses for tray menus. Clicking a session flashes the terminal that owns
 it; clicking a usage row refreshes.
+
+**HOOKS** says whether each tool's wiring works. A hook fails silently by design
+— it must never break the agent's turn — so a broken one looks exactly like a
+tool nobody is using. Each tool shows its last hook event, or `!` and why it is
+quiet: `hooks not installed`, or `hooks not firing` when its transcripts changed
+more than 2 hours after its last event (every turn fires at its start and end,
+so only a single turn longer than that could trip it). A `!` row also appears if
+`agentwatch.log` holds errors; clicking it opens the data folder.
+
+When a usage window passes 90% you get one toast, and not another until that
+window resets — the meters are otherwise only seen with the menu open.
 
 Under a running session is what it is doing now — the tool it is in and what
 that tool is acting on, or `thinking` / `writing` between tools — and one `↳`

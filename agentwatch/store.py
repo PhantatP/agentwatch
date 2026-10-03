@@ -146,6 +146,7 @@ class Sessions:
     def __init__(self):
         self.by_key: dict[tuple[str, str], Session] = {}
         self.offset = 0
+        self.last_event: dict[str, float] = {}  # tool -> newest event time
 
     def poll(self):
         """Read new events. Returns the list of (event, session) to notify on."""
@@ -153,6 +154,7 @@ class Sessions:
         notifications = []
         for ev in events:
             tool, sid = ev.get("tool", "?"), ev.get("session", "?")
+            self.last_event[tool] = max(self.last_event.get(tool, 0.0), ev.get("ts", 0.0))
             key = (tool, sid)
             name = ev.get("event", "")
             sess = self.by_key.get(key)

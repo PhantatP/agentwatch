@@ -13,11 +13,12 @@ import time
 from PIL import Image, ImageDraw, ImageFont
 import pystray
 
-from . import limits, paths, store, transcript, usage, winui
+from . import health, limits, paths, store, transcript, usage, winui
 
 POLL_SECONDS = 1.0
 USAGE_SECONDS = 20.0
 DONE_GRACE = 3.0  # hold a "done" this long in case the next turn starts at once
+WARN_PERCENT = 90  # toast once a limit window passes this
 
 COLORS = {
     "running": (56, 132, 255),   # blue  -- agent is working (a tool not in TOOL_COLORS)
@@ -28,14 +29,15 @@ COLORS = {
 
 # The running arc takes the colour of the company behind the tool at work, so
 # you can tell which one it is. OpenAI's well-known green would read as the
-# green "idle" ring, so Codex takes OpenAI's monochrome instead -- an off-white
-# that suits the dark taskbar but would fade on a light one.
+# green "idle" ring, so Codex takes OpenAI's monochrome instead: off-white on a
+# dark taskbar, near-black on a light one, where off-white would vanish.
 # Order is the order of segments when several tools are working at once.
 TOOL_COLORS = {
     "claude": (217, 119, 87),        # Claude orange, #D97757
     "codex": (236, 236, 241),        # OpenAI off-white, #ECECF1
     "antigravity": (66, 133, 244),   # Google blue, #4285F4
 }
+LIGHT_TASKBAR_COLORS = {"codex": (13, 13, 13)}  # OpenAI black, #0D0D0D
 
 DEFAULT_SETTINGS = {"toasts": True, "flash": True}
 SETTINGS_FILE = paths.DATA / "settings.json"
@@ -75,7 +77,9 @@ def _font(pixels: int):
     return ImageFont.load_default()
 
 
-def make_icon(state: str, count: int, agents: int = 0, size: int = 64, tools=()) -> Image.Image:
+def make_icon(
+    state: str, count: int, agents: int = 0, size: int = 64, tools=(), light: bool = False
+) -> Image.Image:
     """A crisp state glyph. Shape carries the state as well as colour, so it
     still reads when the tray is small or the user cannot separate the hues."""
     scale = size * SUPERSAMPLE
@@ -92,7 +96,8 @@ def make_icon(state: str, count: int, agents: int = 0, size: int = 64, tools=())
 
     if state == "running":
         # an open arc reads as motion; one segment per tool at work, in its colour
-        hues = [TOOL_COLORS.get(tool, COLORS["running"]) + (255,) for tool in tools] or [color]
+        palette = dict(TOOL_COLORS, **(LIGHT_TASKBAR_COLORS if light else {}))
+        hues = [palette.get(tool, COLORS["running"]) + (255,) for tool in tools] or [color]
         span = 270 / len(hues)
         gap = 7  # degrees cut from each side of a seam, so adjacent hues stay apart
         # With a badge, turn the arc's opening to face it, so the badge covers
@@ -196,6 +201,9 @@ class Tray:
         self.claude_limits = limits.ClaudeLimits()
         self.first_poll = True
         self.held = []  # notifications not yet announced
+        self.warned = set()  # (tool, window, reset time) already warned about
+        self.health = []  # [(tool, status, healthy)] for the HOOKS section
+        self.log_errors = 0
         self.started = time.time()
         self.stopping = threading.Event()
         self.icon = pystray.Icon(
@@ -245,6 +253,17 @@ class Tray:
             yield item(header, _noop, enabled=False)
             for row in rows:
                 yield item("  " + row, self.refresh_usage_async)
+
+        # Hooks fail silently by design, so a broken one looks like an idle
+        # tool. This says which: last event per tool, or why it is quiet.
+        if self.health or self.log_errors:
+            yield item("HOOKS", _noop, enabled=False)
+        for tool, status, healthy in self.health:
+            mark = "  " if healthy else "! "
+            yield item("%s%-6s  %s" % (mark, tool, _menu_text(status)), self.refresh_usage_async)
+        if self.log_errors:
+            yield item("! %d error%s in agentwatch.log" % (self.log_errors, "" if self.log_errors == 1 else "s"),
+                       self.open_data_folder)
 
         yield pystray.Menu.SEPARATOR
         yield item("Toasts", self.toggle("toasts"), checked=lambda _i: self.settings["toasts"])
@@ -345,6 +364,35 @@ class Tray:
         except Exception as exc:
             self.usage_error = repr(exc)
         self.claude_limits.maybe_refresh()
+        self.warn_limits()
+        try:
+            self.health = health.check(dict(self.sessions.last_event), limits.age)
+            self.log_errors = health.log_errors()
+        except Exception as exc:
+            self._log("health check error: %r" % (exc,))
+
+    def warn_limits(self):
+        """Toast once when a limit window crosses WARN_PERCENT, then not again
+        until it resets -- the meters are only seen with the menu open."""
+        now = time.time()
+        codex = limits.codex_windows((self.usage or {}).get("codex", {}).get("limits"))
+        for tool, windows in (("claude", self.claude_limits.windows), ("codex", codex)):
+            for window in windows:
+                resets = window["resets_at"]
+                key = (tool, window["label"], round(resets))
+                if window["percent"] < WARN_PERCENT or key in self.warned:
+                    continue
+                if resets and resets <= now:
+                    continue  # a stale Codex snapshot from a window already reset
+                self.warned.add(key)
+                if not self.settings["toasts"]:
+                    continue
+                title = "%s %s limit at %.0f%%" % (tool_name(tool), window["label"], window["percent"])
+                body = "Resets in %s." % usage.human_until(resets) if resets else "Usage is nearly used up."
+                try:
+                    self.icon.notify(body, title)
+                except Exception:
+                    pass
 
     def quit(self, _icon=None, _item=None):
         self.stopping.set()
@@ -407,7 +455,11 @@ class Tray:
             {s.tool for s in active if s.state == "running"},
             key=lambda t: (order.index(t) if t in order else len(order), t),
         )
-        self.icon.icon = make_icon(state, len(active), agents, tools=tools)
+        try:
+            light = winui.light_taskbar()
+        except Exception:
+            light = False
+        self.icon.icon = make_icon(state, len(active), agents, tools=tools, light=light)
         # A Windows tooltip is capped at 127 characters, so build it in priority
         # order and stop before it would be cut mid-word.
         headline = {

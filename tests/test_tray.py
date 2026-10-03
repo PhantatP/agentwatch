@@ -105,6 +105,36 @@ def test_running_arc_takes_each_tools_colour():
     assert _on_arc(icon, 300) == tray.TOOL_COLORS["codex"]
 
 
+def test_codex_turns_black_on_a_light_taskbar():
+    dark = tray.make_icon("running", 1, tools=["codex"])
+    light = tray.make_icon("running", 1, tools=["codex"], light=True)
+    assert _on_arc_single(dark) == tray.TOOL_COLORS["codex"]
+    assert _on_arc_single(light) == tray.LIGHT_TASKBAR_COLORS["codex"]
+
+
+def _on_arc_single(image):
+    """Mid-stroke on the left of the arc, for an icon with no badge."""
+    edge, stroke = 64 * 0.09, 64 * 0.17
+    return image.getpixel((round(edge + stroke / 2), 32))[:3]
+
+
+def test_limit_warning_fires_once_per_window(monkeypatch):
+    t = tray.Tray()
+    shown = []
+    monkeypatch.setattr(t.icon, "notify", lambda body, title: shown.append(title))
+    resets = time.time() + 3600
+    t.claude_limits.windows = [
+        {"label": "5h block", "percent": 93.0, "resets_at": resets},
+        {"label": "week", "percent": 40.0, "resets_at": resets + 86400},
+    ]
+    t.warn_limits()
+    t.warn_limits()
+    assert shown == ["Claude 5h block limit at 93%"]
+    t.claude_limits.windows[0]["resets_at"] = resets + 5 * 3600  # the next window
+    t.warn_limits()
+    assert len(shown) == 2
+
+
 def test_tick_colours_the_arc_by_running_tool(events, monkeypatch):
     seen = {}
     monkeypatch.setattr(tray, "make_icon", lambda *a, **kw: seen.update(kw) or tray.Image.new("RGBA", (1, 1)))

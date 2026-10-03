@@ -5,6 +5,7 @@ flash belongs to whatever terminal hosts it, so we walk up the process tree
 and flash the first ancestor that owns a visible top-level window.
 """
 import ctypes
+import winreg
 from ctypes import wintypes
 
 from . import proc
@@ -48,6 +49,16 @@ def _windows_by_pid() -> dict:
 
     _user32.EnumWindows(_ENUMPROC(callback), 0)
     return found
+
+
+def light_taskbar() -> bool:
+    """Whether the taskbar, and so the tray, uses the light theme."""
+    key = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key) as handle:
+            return winreg.QueryValueEx(handle, "SystemUsesLightTheme")[0] == 1
+    except OSError:
+        return False  # older Windows: the taskbar is dark
 
 
 def is_foreground(pid: int) -> bool:
