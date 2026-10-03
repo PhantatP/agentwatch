@@ -39,6 +39,13 @@ def process_name(pid: int) -> str:
         _k32.CloseHandle(handle)
 
 
+def python_alive(pid: int) -> bool:
+    """A live Python process. Windows reuses pids, so for the tray's lock file
+    "alive" alone could mean an unrelated program now holds the old tray's pid
+    -- and the tray would never start again."""
+    return process_alive(pid) and process_name(pid).lower() in ("python.exe", "pythonw.exe")
+
+
 class _PROCESSENTRY32(ctypes.Structure):
     _fields_ = [
         ("dwSize", wintypes.DWORD),

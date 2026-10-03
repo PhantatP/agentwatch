@@ -198,9 +198,10 @@ OneDrive, so it does not generate sync traffic:
 | File | Purpose |
 | --- | --- |
 | `events.jsonl` | Hook event log, trimmed to the last 2000 lines |
+| `events.lock` | Taken briefly by every append, so simultaneous hooks cannot tear lines |
 | `usage_cache.json` | Per-file parse cache |
 | `settings.json` | Toast and flash toggles |
-| `tray.pid` | Single-instance lock |
+| `tray.pid` | Single-instance lock; only a live *Python* process holding that pid counts, since Windows reuses pids |
 | `agentwatch.log` | Errors only; normally empty |
 
 ## Tests
@@ -253,6 +254,10 @@ need no running CLI and never touch your real `%LOCALAPPDATA%\agentwatch`.
   runs, silently. Its commands are therefore written with forward slashes and no
   quotes, which PowerShell, cmd, and bash all read the same way. A path containing
   a space would need quotes again and break this.
+- Simultaneous appends to `events.jsonl` from separate processes tore lines and
+  left gaps on Windows, where appending is not atomic across processes. Every
+  append now takes `events.lock` (polled every 2ms; `msvcrt.LK_LOCK` would retry
+  only once a second, stalling a Claude turn on any collision).
 - Codex hooks are registered with `"async": true` so they never delay a turn.
   Claude Code hooks are synchronous and add roughly 130ms per event: Python
   interpreter startup plus the ~20ms process-tree walk.

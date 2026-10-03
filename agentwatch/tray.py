@@ -471,7 +471,7 @@ def already_running() -> bool:
         pid = int(paths.TRAY_LOCK.read_text().strip())
     except (OSError, ValueError):
         return False
-    return proc.process_alive(pid) and pid != os.getpid()
+    return proc.python_alive(pid) and pid != os.getpid()
 
 
 def main() -> int:

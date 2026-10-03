@@ -31,7 +31,7 @@ def _spawn_tray() -> None:
     """Start the tray if it is not already running."""
     try:
         pid = int(paths.TRAY_LOCK.read_text().strip())
-        if proc.process_alive(pid):
+        if proc.python_alive(pid):
             return
     except (OSError, ValueError):
         pass

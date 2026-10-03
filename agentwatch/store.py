@@ -3,7 +3,9 @@
 Hooks only append; the tray derives everything. That keeps hook latency low,
 which matters because a hook blocks the CLI turn while it runs.
 """
+import contextlib
 import json
+import msvcrt
 import os
 import time
 from dataclasses import dataclass, field
@@ -11,6 +13,7 @@ from dataclasses import dataclass, field
 from . import paths, proc, transcript
 
 MAX_EVENTS_BYTES = 512 * 1024
+LOCK_TRIES = 2500  # x 2ms: give up after ~5s rather than hang the agent's turn
 NEWLINE = bytes([10])
 
 # event -> session status. Events not listed leave status unchanged.
@@ -36,26 +39,51 @@ NOTIFY_BY_EVENT = {
 }
 
 
+@contextlib.contextmanager
+def _locked():
+    """Hold the event-log lock. Hooks from several sessions append at once, and
+    on Windows an append is not atomic across processes: unguarded, writes tore
+    lines and left gaps. Polls every 2ms: msvcrt.LK_LOCK retries only once a
+    second, which would stall a Claude turn a full second on any collision."""
+    with open(paths.EVENTS.with_suffix(".lock"), "a+b") as lock:
+        lock.seek(0)
+        for _ in range(LOCK_TRIES):
+            try:
+                msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+                break
+            except OSError:
+                time.sleep(0.002)
+        else:
+            raise TimeoutError("event log stayed locked")
+        try:
+            yield
+        finally:
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+
+
 def append(event: dict) -> None:
     paths.ensure_data()
     event.setdefault("ts", time.time())
-    line = json.dumps(event, ensure_ascii=False) + "\n"
-    with open(paths.EVENTS, "a", encoding="utf-8") as fh:
+    line = (json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8")
+    with _locked(), open(paths.EVENTS, "ab") as fh:
         fh.write(line)
 
 
 def rotate_if_large() -> None:
-    """Keep the tail only. Called by the tray, never by a hook."""
+    """Keep the tail only. Called by the tray, never by a hook. Locked, so an
+    event appended mid-rotation is not lost with the old file."""
     try:
         if paths.EVENTS.stat().st_size <= MAX_EVENTS_BYTES:
             return
     except OSError:
         return
-    lines = paths.EVENTS.read_text(encoding="utf-8", errors="replace").splitlines()
-    keep = lines[-2000:]
-    tmp = paths.EVENTS.with_suffix(".tmp")
-    tmp.write_text("\n".join(keep) + "\n", encoding="utf-8")
-    os.replace(tmp, paths.EVENTS)
+    with _locked():
+        lines = paths.EVENTS.read_text(encoding="utf-8", errors="replace").splitlines()
+        keep = lines[-2000:]
+        tmp = paths.EVENTS.with_suffix(".tmp")
+        tmp.write_text("\n".join(keep) + "\n", encoding="utf-8")
+        os.replace(tmp, paths.EVENTS)
 
 
 def read_events(offset: int = 0):
