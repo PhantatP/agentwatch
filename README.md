@@ -142,6 +142,19 @@ duplicates.
 **Restart Claude Code, Codex, and Antigravity afterwards** — they read hook
 config at startup.
 
+**Codex will not run the hooks until you trust them.** It loads them but marks
+each one `untrusted` and skips it silently. Trust is recorded against each hook's
+definition, so this is needed again whenever `install.py` changes a command (a new
+Python path, say). Only Codex's terminal UI can grant it — the VS Code extension
+and desktop app cannot:
+
+```
+codex          # in any terminal
+/hooks         # review the agentwatch hooks and trust them
+```
+
+Then reload the Codex panel (or VS Code) so it picks up the trust.
+
 The tray starts itself on the next agent turn: the `SessionStart` and
 `UserPromptSubmit` hooks launch it (as `pythonw.exe`, so no console window) if it
 is not already running, and a PID lock keeps it to one instance. It appears about
@@ -235,6 +248,11 @@ need no running CLI and never touch your real `%LOCALAPPDATA%\agentwatch`.
   runs each hook through a shell (`bash.exe` with Git Bash) that exits with the
   hook, so the hook walks past any shell ancestors and records the CLI's pid.
   Recording the shell made every session look dead within a second.
+- Codex runs hooks through PowerShell on Windows, where a line that starts with a
+  quoted path is a parse error rather than a command — so a quoted hook never
+  runs, silently. Its commands are therefore written with forward slashes and no
+  quotes, which PowerShell, cmd, and bash all read the same way. A path containing
+  a space would need quotes again and break this.
 - Codex hooks are registered with `"async": true` so they never delay a turn.
   Claude Code hooks are synchronous and add roughly 130ms per event: Python
   interpreter startup plus the ~20ms process-tree walk.

@@ -99,11 +99,26 @@ def claude_group(event: str) -> dict:
     return {"hooks": [{"type": "command", "command": command, "timeout": 10}]}
 
 
+def portable_command(tool: str, event: str) -> str:
+    """A hook command that runs the same in PowerShell, cmd, and bash.
+
+    Codex runs hooks through PowerShell on Windows, where a line that starts
+    with a quoted path is a parse error, not a command -- so the hook never ran.
+    Forward slashes and no quotes avoid that; a path with a space still needs
+    quotes, and would break PowerShell again.
+    """
+    def arg(path) -> str:
+        text = str(path).replace(chr(92), "/")
+        return '"%s"' % text if " " in text else text
+
+    return "%s %s --tool %s --event %s --source %s" % (
+        arg(python_exe()), arg(HOOK_ENTRY), tool, event, MARKER)
+
+
 def codex_group(event: str) -> dict:
     # Codex wants `command` as a single string, not a list -- verified against
     # the app-server `hooks/list` RPC, which rejects a sequence outright.
-    command = '"%s" "%s" --tool codex --event %s --source %s' % (
-        python_exe(), HOOK_ENTRY, event, MARKER)
+    command = portable_command("codex", event)
     # Codex caps teardown hooks at 3s and always runs SessionEnd synchronously;
     # match that here so it has nothing to clamp or warn about.
     teardown = event in ("SessionEnd", "Interrupt")
@@ -157,18 +172,6 @@ def install_codex(remove: bool) -> str:
     return str(target)
 
 
-def antigravity_command(event: str) -> str:
-    # Which shell Antigravity runs hooks in on Windows is not documented. Forward
-    # slashes and no quotes (unless a path has spaces) read the same in cmd,
-    # PowerShell, and bash; a quoted path is not a command in PowerShell.
-    def arg(path) -> str:
-        text = str(path).replace(chr(92), "/")
-        return '"%s"' % text if " " in text else text
-
-    return "%s %s --tool antigravity --event %s --source %s" % (
-        arg(python_exe()), arg(HOOK_ENTRY), event, MARKER)
-
-
 def install_antigravity(remove: bool) -> str:
     # One hooks.json, shared by the Antigravity IDE, CLI, and app. Its top level
     # is named groups, so ours is the "agentwatch" group and nothing else is touched.
@@ -180,7 +183,7 @@ def install_antigravity(remove: bool) -> str:
     config.pop(MARKER, None)
     if not remove:
         config[MARKER] = {
-            event: [{"type": "command", "command": antigravity_command(event), "timeout": 10}]
+            event: [{"type": "command", "command": portable_command("antigravity", event), "timeout": 10}]
             for event in ANTIGRAVITY_EVENTS
         }
     write_json(target, config)
