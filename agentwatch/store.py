@@ -138,15 +138,16 @@ class Session:
     since: float = field(default_factory=time.time)
     last_event: str = ""
     agents: dict = field(default_factory=dict)  # mid-turn subagent id -> transcript
+    background: dict = field(default_factory=dict)  # pending task id -> label
 
     @property
     def state(self) -> str:
-        """Status as shown. A turn that ended while its background agents
-        still work has not really finished, so it reads as running. A finished
+        """Status as shown. A turn that ended while its agents or background
+        tasks still work has not really finished, so it reads as running. A finished
         one is news only briefly: after IDLE_FADE it goes quiet."""
         if self.status != "idle":
             return self.status
-        if self.agents:
+        if self.agents or self.background:
             return "running"
         return "quiet" if time.time() - self.since > IDLE_FADE else "idle"
 
@@ -188,11 +189,13 @@ class Sessions:
             sess.last_event = name
             if name == "Stop":
                 sess.agents = transcript.live_agents(sess.transcript)
+                sess.background = transcript.background(sess.transcript)
             if status == "ended":
                 self.by_key.pop(key, None)
-            elif name == "Stop" and sess.agents:
-                # The main agent paused to wait on its agents -- or woke to read
-                # one agent's result. Only the Stop after the last one is "done".
+            elif name == "Stop" and (sess.agents or sess.background):
+                # The main agent paused to wait on its agents or background
+                # tasks -- or woke to read one's result. Each ending wakes it
+                # again, so only the Stop after the last one is "done".
                 continue
             elif name in NOTIFY_BY_EVENT:
                 notifications.append((ev, sess))
@@ -214,6 +217,7 @@ class Sessions:
                 del self.by_key[key]
                 continue
             sess.agents = transcript.live_agents(sess.transcript)
+            sess.background = transcript.background(sess.transcript)
             if sess.status not in ("running", "waiting"):
                 continue
             # Only an entry written after this status began counts. Claude
@@ -240,6 +244,9 @@ class Sessions:
 
     def agent_count(self) -> int:
         return sum(len(s.agents) for s in self.by_key.values())
+
+    def background_count(self) -> int:
+        return sum(len(s.background) for s in self.by_key.values())
 
     def aggregate(self) -> str:
         statuses = {s.state for s in self.by_key.values()}

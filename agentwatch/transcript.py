@@ -9,8 +9,10 @@ The transcript settles it. A completed turn ends with an assistant message whose
 user tool_result. An interrupt is written as a user message containing
 `[Request interrupted by user]`.
 """
+
 import json
 import os
+import re
 import time
 from datetime import datetime
 
@@ -195,3 +197,124 @@ def live_agents(path: str) -> dict:
         if turn_state(entry.path) == "running":
             live[name[len("agent-"):-len(".jsonl")]] = entry.path
     return live
+
+
+# A launch heard nothing from for this long is presumed gone -- its CLI was
+# restarted, say -- so it cannot hold a session's "done" back forever.
+PENDING_MAX = 3600
+_TASK_ID = re.compile(r"<task-id>([^<]+)</task-id>")
+_STATUS = re.compile(r"<status>([^<]+)</status>")
+_HANDBACK = re.compile(r'<agent-message from=\\*"([^"\\]+)')
+_STILL_GOING = ("running", "pending", "in_progress")
+# Where an ending is reported: a message, or -- while the main agent is busy --
+# a queued command. Not api-request-blob, which replays old history and would
+# clear an agent a later message has resumed.
+_REPORTS = ("user", "queue-operation", "attachment")
+_background: dict = {}  # transcript path -> incremental scan state
+
+
+def _endings(line: str):
+    """Task ids a line reports as ended: notifications with a final status,
+    and agents' hand-backs."""
+    for chunk in line.split("<task-notification>")[1:]:
+        task, status = _TASK_ID.search(chunk), _STATUS.search(chunk)
+        if task and status and status.group(1).strip() not in _STILL_GOING:
+            yield task.group(1).strip()
+    yield from _HANDBACK.findall(line)
+
+
+def _scan_background(state: dict, obj: dict, line: str) -> None:
+    if obj.get("type") in _REPORTS:
+        for task in _endings(line):
+            state["tasks"].pop(task, None)
+        origin = obj.get("origin")
+        if isinstance(origin, dict) and origin.get("kind") == "peer":
+            state["tasks"].pop(origin.get("from"), None)  # a hand-back: it finished
+    message = obj.get("message")
+    if not isinstance(message, dict):
+        return
+    content = message.get("content")
+    when = min(_entry_time(obj), time.time())
+    if obj.get("type") == "assistant" and isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                args = block.get("input") or {}
+                label = (
+                    args.get("description")
+                    or args.get("summary")
+                    or block.get("name")
+                    or "task"
+                )
+                state["uses"][block.get("id")] = (
+                    block.get("name"),
+                    str(label),
+                    # whom it acts on: a message's agent, a stopped task
+                    args.get("to") or args.get("task_id") or args.get("shell_id"),
+                )
+        return
+    if obj.get("type") != "user" or not isinstance(content, list):
+        return
+    result = obj.get("toolUseResult")
+    if not isinstance(result, dict):
+        result = {}
+    for block in content:
+        if not (isinstance(block, dict) and block.get("type") == "tool_result"):
+            continue
+        name, label, to = state["uses"].pop(
+            block.get("tool_use_id"), (None, "task", None)
+        )
+        task = result.get("backgroundTaskId") or result.get("taskId")
+        if result.get("isAsync") and result.get("agentId"):
+            task = result["agentId"]
+            state["agents"][task] = label
+        if task:
+            state["tasks"][str(task)] = (label, when)
+        elif name == "TaskStop":  # stopped tasks send no notification
+            state["tasks"].pop(to, None)
+        elif name == "SendMessage" and result.get("success") and to in state["agents"]:
+            # A message to a finished agent resumes it, and it reports again.
+            state["tasks"][to] = (state["agents"][to], when)
+
+
+def background(path: str) -> dict:
+    """Background work a session launched and has not heard back from, as
+    {task id: label}: shells and monitors run in the background, async agents,
+    and agents resumed by a message. Each one wakes the main agent when it
+    ends, so until all have, a Stop is a pause, not the end.
+
+    Read incrementally: only lines appended since the last call are parsed."""
+    if not path:
+        return {}
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return {}
+    state = _background.get(path)
+    if state is None or size < state["offset"]:
+        state = _background[path] = {"offset": 0, "uses": {}, "tasks": {}, "agents": {}}
+    if size > state["offset"]:
+        try:
+            with open(path, "rb") as fh:
+                fh.seek(state["offset"])
+                data = fh.read()
+        except OSError:
+            data = b""
+        cut = data.rfind(b"\n")
+        if cut != -1:
+            state["offset"] += cut + 1
+            for line in data[: cut + 1].decode("utf-8", "replace").splitlines():
+                if not any(
+                    k in line
+                    for k in ('"message"', "<task-notification>", "<agent-message")
+                ):
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(obj, dict):
+                    _scan_background(state, obj, line)
+    cutoff = time.time() - PENDING_MAX
+    return {
+        task: label for task, (label, when) in state["tasks"].items() if when >= cutoff
+    }

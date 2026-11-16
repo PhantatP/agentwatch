@@ -253,6 +253,9 @@ class Tray:
                 if doing:
                     line += " — " + _fit(doing, 32)
                 yield item("        ↳ " + _menu_text(line), self.reveal(sess))
+            for task, label in sess.background.items():
+                if task not in sess.agents:  # a live agent already has its row
+                    yield item("        ↳ background · " + _menu_text(_fit(label, 40)), self.reveal(sess))
 
         yield pystray.Menu.SEPARATOR
         for header, rows in self.usage_sections():
@@ -428,7 +431,7 @@ class Tray:
         for sess in self.sessions.active():
             if sess.status == "waiting":
                 kind, delay = "remind_permission", REMIND_AFTER["permission"]
-            elif sess.status == "idle" and sess.last_event == "Stop" and not sess.agents:
+            elif sess.status == "idle" and sess.last_event == "Stop" and not (sess.agents or sess.background):
                 kind, delay = "remind_done", REMIND_AFTER["done"]
             else:
                 continue  # working, interrupted by you, or just opened
@@ -471,6 +474,8 @@ class Tray:
                 self.held.remove((event, sess))
             elif event.get("event") != "Stop" or now - event.get("ts", now) >= DONE_GRACE:
                 self.held.remove((event, sess))
+                if event.get("event") == "Stop" and (sess.agents or sess.background):
+                    continue  # work it was waiting on showed up during the grace
                 self.announce(event, sess)
 
         self.sessions.reconcile()
@@ -478,6 +483,7 @@ class Tray:
         state = self.sessions.aggregate()
         active = self.sessions.active()
         agents = self.sessions.agent_count()
+        busy = agents + self.sessions.background_count()
         order = list(TOOL_COLORS)
         tools = sorted(
             {s.tool for s in active if s.state == "running"},
@@ -487,7 +493,7 @@ class Tray:
             light = winui.light_taskbar()
         except Exception:
             light = False
-        self.icon.icon = make_icon(state, len(active), agents, tools=tools, light=light)
+        self.icon.icon = make_icon(state, len(active), busy, tools=tools, light=light)
         # A Windows tooltip is capped at 127 characters, so build it in priority
         # order and stop before it would be cut mid-word.
         headline = {
