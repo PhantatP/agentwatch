@@ -13,6 +13,7 @@ CODEX_SESSIONS = CODEX_HOME / "sessions"
 DATA = Path(os.environ.get("LOCALAPPDATA") or HOME) / "agentwatch"
 EVENTS = DATA / "events.jsonl"
 USAGE_CACHE = DATA / "usage_cache.json"
+LIMITS_CACHE = DATA / "limits_cache.json"
 TRAY_LOCK = DATA / "tray.pid"
 LOG = DATA / "agentwatch.log"
 

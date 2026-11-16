@@ -132,7 +132,7 @@ def test_an_interrupt_is_not_reminded(events, watched):
     assert watched.toasts == []
 
 
-def test_menu_shows_activity_and_named_agents(events):
+def test_panel_view_shows_activity_and_named_agents(events):
     write_rows(events.transcript, PROMPT, tool_use("Edit", file_path=r"C:\x\tray.py"))
     agent = write_rows(events.agents / "agent-a.jsonl", PROMPT, tool_use("Bash", description="Run tests & lint"))
     agent.with_name("agent-a.meta.json").write_text(
@@ -140,13 +140,20 @@ def test_menu_shows_activity_and_named_agents(events):
     )
     t = tray.Tray()
     events("UserPromptSubmit")
-    t.sessions.poll()
-    t.sessions.reconcile()
-    rows = [str(item.text) for item in t.build_menu()]
-    assert any("running" in r and "1 agent" in r for r in rows)
-    assert "        Edit tray.py" in rows
-    assert "        ↳ reviewer · Check the fix — Bash Run tests && lint" in rows
+    t.tick()
+    (row,) = t.view
+    assert (row["label"], row["agents"], row["can_end"]) == ("running", 1, False)
+    assert row["lines"] == ["Edit tray.py", "↳ reviewer · Check the fix — Bash Run tests & lint"]
 
+
+def test_either_click_opens_the_panel_and_there_is_no_menu(monkeypatch):
+    t = tray.Tray()
+    opened = []
+    monkeypatch.setattr(t.panel, "toggle", lambda: opened.append(1))
+    t.on_click(0, tray.WM_LBUTTONUP)
+    t.on_click(0, tray.WM_RBUTTONUP)
+    t.on_click(0, 0x0200)  # a mouse move is not a click
+    assert opened == [1, 1]
 
 def test_icon_marks_agents_with_a_centre_dot():
     centre = (32, 32)

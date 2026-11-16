@@ -1,5 +1,6 @@
 """Small Win32 helpers that avoid a psutil dependency."""
 import ctypes
+import subprocess
 from ctypes import wintypes
 
 _k32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -44,6 +45,27 @@ def python_alive(pid: int) -> bool:
     "alive" alone could mean an unrelated program now holds the old tray's pid
     -- and the tray would never start again."""
     return process_alive(pid) and process_name(pid).lower() in ("python.exe", "pythonw.exe")
+
+
+# What a session's pid may be when the tray is asked to end it. The hook records
+# the agent CLI itself; anything else means Windows reused the pid, and ending
+# it would kill an unrelated program.
+AGENT_EXES = ("claude.exe", "codex.exe", "node.exe")
+
+
+def end_tree(pid: int) -> bool:
+    """End an agent CLI and everything it started (shells, MCP servers) --
+    never its parents, so the terminal or editor hosting it stays open.
+    Refuses a pid that is not an agent CLI. Returns whether it was ended."""
+    if not process_alive(pid) or process_name(pid).lower() not in AGENT_EXES:
+        return False
+    CREATE_NO_WINDOW = 0x08000000
+    done = subprocess.run(
+        ["taskkill", "/PID", str(int(pid)), "/T", "/F"],
+        capture_output=True,
+        creationflags=CREATE_NO_WINDOW,
+    )
+    return done.returncode == 0
 
 
 class _PROCESSENTRY32(ctypes.Structure):

@@ -4,6 +4,7 @@ Runs as a single long-lived process so notifications cost nothing per event --
 the hooks just append a line, and this reads it. Started automatically by the
 first hook of a session, or manually with `python -m agentwatch.tray`.
 """
+import ctypes
 import json
 import os
 import sys
@@ -13,7 +14,7 @@ import time
 from PIL import Image, ImageDraw, ImageFont
 import pystray
 
-from . import health, limits, paths, store, transcript, usage, winui
+from . import health, limits, panel, paths, proc, store, transcript, usage, winui
 
 POLL_SECONDS = 1.0
 USAGE_SECONDS = 20.0
@@ -42,7 +43,19 @@ TOOL_COLORS = {
 }
 LIGHT_TASKBAR_COLORS = {"codex": (13, 13, 13)}  # OpenAI black, #0D0D0D
 
-DEFAULT_SETTINGS = {"toasts": True, "flash": True}
+DEFAULT_SETTINGS = {
+    "toasts": True,
+    "flash": True,
+    # What the panel shows.
+    "show_sessions": True,
+    "show_hooks": True,
+    "show_claude": True,
+    "show_codex": True,
+    "show_limits": True,
+    "show_tokens": True,
+    "show_chart": True,
+    "show_models": True,
+}
 SETTINGS_FILE = paths.DATA / "settings.json"
 
 
@@ -188,13 +201,23 @@ def _fit(text: str, limit: int) -> str:
     return cut.rstrip(" ,.;:—-") + "…"
 
 
-def _menu_text(text: str) -> str:
-    """Windows reads a lone & in a menu item as a keyboard-shortcut marker."""
-    return text.replace("&", "&&")
+def coarse_age(since: float) -> str:
+    """'just now', '4m', '1h05m' -- minutes at most, so the panel redraws once
+    a minute for it, not every second."""
+    minutes = max(0, int(time.time() - since)) // 60
+    if not minutes:
+        return "just now"
+    if minutes < 60:
+        return "%dm" % minutes
+    return "%dh%02dm" % (minutes // 60, minutes % 60)
 
 
-def _noop(_icon=None, _item=None):
-    """Placeholder action: an enabled row renders in normal text, not grey."""
+def project_of(sess) -> str:
+    return os.path.basename((sess.cwd or "").rstrip("\\/")) or sess.cwd or "?"
+
+
+# Tray-icon clicks, as pystray's window receives them.
+WM_LBUTTONUP, WM_RBUTTONUP = 0x0202, 0x0205
 
 
 class Tray:
@@ -211,174 +234,137 @@ class Tray:
         self.health = []  # [(tool, status, healthy)] for the HOOKS section
         self.log_errors = 0
         self.started = time.time()
+        self.refreshing = threading.Lock()
         self.stopping = threading.Event()
-        self.icon = pystray.Icon(
-            "agentwatch",
-            make_icon("none", 0),
-            "agentwatch",
-            menu=pystray.Menu(self.build_menu),
-        )
+        self.panel = panel.Panel(self)
+        self.view = []  # the sessions as the panel lists them; see session_view
+        self.icon = pystray.Icon("agentwatch", make_icon("none", 0), "agentwatch")
+        # No menu: either button opens the panel. pystray looks its handlers up
+        # per message, so the click handler can be swapped for ours.
+        handlers = getattr(self.icon, "_message_handlers", None)
+        if handlers is not None:
+            from pystray._util import win32 as pystray_win32
 
-    # ---------- menu ----------
+            handlers[pystray_win32.WM_NOTIFY] = self.on_click
 
-    def build_menu(self):
-        item = pystray.MenuItem
-        # Only section headers are disabled. Windows greys disabled text almost
-        # to invisibility, so every row carrying real information stays enabled.
-        yield item("SESSIONS", _noop, enabled=False)
-        active = self.sessions.active()
-        if not active:
-            yield item("    Nothing running", _noop)
-        for sess in active:
-            project = os.path.basename(sess.cwd.rstrip("\\/")) or sess.cwd
-            yield item(
-                "  %s %-6s  %s · %s · %s%s"
-                % (
-                    DOT.get(sess.state, "○"),
-                    sess.tool,
-                    project[:22],
-                    LABEL.get(sess.state, sess.state),
-                    short_age(sess.since),
-                    agents_note(len(sess.agents)),
-                ),
-                self.reveal(sess),
-            )
+    def on_click(self, _wparam, lparam):
+        if lparam in (WM_LBUTTONUP, WM_RBUTTONUP):
+            # A tray click lets this process take the foreground. Claim it, so
+            # the panel can take focus -- and close when you click elsewhere.
+            hwnd = getattr(self.icon, "_hwnd", None)
+            if hwnd:
+                ctypes.windll.user32.SetForegroundWindow(hwnd)
+            self.panel.toggle()
+        return 0
+
+    # ---------- what the panel shows ----------
+
+    def session_view(self):
+        """The sessions as the panel lists them. Built on the loop thread each
+        tick, so the panel never walks the session table while it changes."""
+        endable = {id(s) for s in self.idle_sessions()}
+        rows = []
+        for sess in self.sessions.active():
+            lines = []
             if sess.status == "running":
                 doing = transcript.activity(sess.transcript)
                 if doing:
-                    yield item("        " + _menu_text(_fit(doing, 48)), self.reveal(sess))
+                    lines.append(_fit(doing, 52))
             for path in sess.agents.values():
-                line = _fit(transcript.agent_label(path), 44)
+                line = _fit(transcript.agent_label(path), 40)
                 doing = transcript.activity(path)
                 if doing:
-                    line += " — " + _fit(doing, 32)
-                yield item("        ↳ " + _menu_text(line), self.reveal(sess))
+                    line += " — " + _fit(doing, 28)
+                lines.append("↳ " + line)
             for task, label in sess.background.items():
-                if task not in sess.agents:  # a live agent already has its row
-                    yield item("        ↳ background · " + _menu_text(_fit(label, 40)), self.reveal(sess))
-
-        yield pystray.Menu.SEPARATOR
-        for header, rows in self.usage_sections():
-            yield item(header, _noop, enabled=False)
-            for row in rows:
-                yield item("  " + row, self.refresh_usage_async)
-
-        # Hooks fail silently by design, so a broken one looks like an idle
-        # tool. This says which: last event per tool, or why it is quiet.
-        if self.health or self.log_errors:
-            yield item("HOOKS", _noop, enabled=False)
-        for tool, status, healthy in self.health:
-            mark = "  " if healthy else "! "
-            yield item("%s%-6s  %s" % (mark, tool, _menu_text(status)), self.refresh_usage_async)
-        if self.log_errors:
-            yield item("! %d error%s in agentwatch.log" % (self.log_errors, "" if self.log_errors == 1 else "s"),
-                       self.open_data_folder)
-
-        yield pystray.Menu.SEPARATOR
-        yield item("Toasts", self.toggle("toasts"), checked=lambda _i: self.settings["toasts"])
-        yield item("Flash taskbar", self.toggle("flash"), checked=lambda _i: self.settings["flash"])
-        yield item("Refresh usage now", self.refresh_usage_async)
-        yield item("Open data folder", self.open_data_folder)
-        yield item("Quit", self.quit)
-
-    def usage_sections(self):
-        """-> [(header, [row, ...]), ...]
-
-        Each row leads with the meter, whose glyphs are all the same width, so
-        the columns line up even though the menu uses a proportional font.
-        """
-        sections = []
-
-        claude_rows = []
-        if self.claude_limits.error:
-            claude_rows.append(self.claude_limits.error)
-        elif not self.claude_limits.windows:
-            claude_rows.append("loading…")
-        for window in self.claude_limits.windows:
-            claude_rows.append(
-                "%s  %3.0f%%   %s · resets %s"
-                % (
-                    limits.bar(window["percent"]),
-                    window["percent"],
-                    window["label"],
-                    usage.human_until(window["resets_at"]),
-                )
-            )
-        sections.append(("CLAUDE", claude_rows))
-
-        codex_rows = []
-        codex_windows = limits.codex_windows((self.usage or {}).get("codex", {}).get("limits"))
-        if not codex_windows:
-            codex_rows.append("no session recorded yet")
-        for window in codex_windows:
-            codex_rows.append(
-                "%s  %3.0f%%   %s · %s"
-                % (
-                    limits.bar(window["percent"]),
-                    window["percent"],
-                    window["label"],
-                    limits.age(window.get("as_of", 0)),
-                )
-            )
-        sections.append(("CODEX", codex_rows))
-
-        if self.usage_error:
-            sections.append(("TOKENS", ["unavailable: " + self.usage_error[:32]]))
-        elif self.usage:
-            sections.append(
-                (
-                    "TOKENS",
-                    [
-                        "today   claude %s · codex %s"
-                        % (
-                            usage.human_tokens(self.usage["claude"]["today"]),
-                            usage.human_tokens(self.usage["codex"]["today"]),
-                        ),
-                        "7 days  claude %s · codex %s"
-                        % (
-                            usage.human_tokens(self.usage["claude"]["week"]),
-                            usage.human_tokens(self.usage["codex"]["week"]),
-                        ),
-                    ],
-                )
-            )
-        return sections
+                if task not in sess.agents:  # a live agent already has its line
+                    lines.append("↳ background · " + _fit(label, 40))
+            rows.append({
+                "sess": sess,
+                "tool": sess.tool,
+                "project": project_of(sess),
+                "state": sess.state,
+                "label": LABEL.get(sess.state, sess.state),
+                "age": coarse_age(sess.since),
+                "agents": len(sess.agents),
+                "lines": lines,
+                "can_end": id(sess) in endable,
+            })
+        return rows
 
     def reveal(self, sess: store.Session):
         """Clicking a session flashes the window that hosts it."""
-        def handler(_icon, _item):
-            try:
-                winui.flash_for_pid(sess.pid, sess.cwd, count=6)
-            except Exception:
-                pass
-        return handler
+        try:
+            winui.flash_for_pid(sess.pid, sess.cwd, count=6)
+        except Exception:
+            pass
 
-    def toggle(self, key):
-        def handler(_icon, _item):
-            self.settings[key] = not self.settings[key]
-            save_settings(self.settings)
-        return handler
+    def set_setting(self, key, value):
+        self.settings[key] = value
+        save_settings(self.settings)
 
-    def open_data_folder(self, _icon=None, _item=None):
+    # ---------- ending idle sessions ----------
+
+    def idle_sessions(self):
+        """Sessions with nothing running that the tray can end: an agent CLI,
+        not Antigravity, whose pid is the editor itself."""
+        return [
+            s for s in self.sessions.active()
+            if s.state in ("idle", "quiet") and s.pid and s.tool in ("claude", "codex")
+        ]
+
+    def end_sessions(self, chosen):
+        """End the agent CLI of each chosen session, after you confirm. The
+        terminal or editor hosting it stays open, and the conversation can be
+        resumed later."""
+        threading.Thread(target=self._end, args=(list(chosen),), daemon=True).start()
+
+    def _end(self, chosen):
+        names = chr(10).join(
+            "  %s  %s · idle %s" % (s.tool, project_of(s), short_age(s.since)) for s in chosen
+        )
+        what = "this session" if len(chosen) == 1 else "these %d sessions" % len(chosen)
+        question = (
+            "End %s?" % what + chr(10) * 2 + names + chr(10) * 2
+            + "The CLI process and anything it started are stopped. "
+            "The conversation is saved and can be resumed."
+        )
+        if not winui.confirm("agentwatch", question):
+            return
+        for sess in chosen:
+            if sess.state not in ("idle", "quiet"):
+                continue  # it started working while the question was open
+            if proc.end_tree(sess.pid):
+                self.sessions.by_key.pop((sess.tool, sess.sid), None)
+            else:
+                self._log("could not end %s session %s (pid %s)" % (sess.tool, sess.sid, sess.pid))
+
+    def open_data_folder(self):
         paths.ensure_data()
         os.startfile(str(paths.DATA))  # noqa: S606 -- opening our own folder
 
-    def refresh_usage_async(self, _icon=None, _item=None):
-        threading.Thread(target=self.refresh_usage, daemon=True).start()
+    def refresh_in_background(self, force=False, max_age=limits.REFRESH_SECONDS):
+        threading.Thread(target=self.refresh_usage, args=(force, max_age), daemon=True).start()
 
-    def refresh_usage(self):
+    def refresh_usage(self, force=False, max_age=limits.REFRESH_SECONDS):
+        # One at a time: two scans at once would race on the usage cache file.
+        if not self.refreshing.acquire(blocking=False):
+            return
         try:
-            self.usage = usage.collect()
-            self.usage_error = ""
-        except Exception as exc:
-            self.usage_error = repr(exc)
-        self.claude_limits.maybe_refresh()
-        self.warn_limits()
-        try:
-            self.health = health.check(dict(self.sessions.last_event), limits.age)
-            self.log_errors = health.log_errors()
-        except Exception as exc:
-            self._log("health check error: %r" % (exc,))
+            try:
+                self.usage = usage.collect()
+                self.usage_error = ""
+            except Exception as exc:
+                self.usage_error = repr(exc)
+            self.claude_limits.maybe_refresh(force=force, max_age=max_age)
+            self.warn_limits()
+            try:
+                self.health = health.check(dict(self.sessions.last_event), limits.age)
+                self.log_errors = health.log_errors()
+            except Exception as exc:
+                self._log("health check error: %r" % (exc,))
+        finally:
+            self.refreshing.release()
 
     def warn_limits(self):
         """Toast once when a limit window crosses WARN_PERCENT, then not again
@@ -403,8 +389,9 @@ class Tray:
                 except Exception:
                     pass
 
-    def quit(self, _icon=None, _item=None):
+    def quit(self):
         self.stopping.set()
+        self.panel.stop()
         try:
             paths.TRAY_LOCK.unlink()
         except OSError:
@@ -480,6 +467,7 @@ class Tray:
 
         self.sessions.reconcile()
         self.remind()
+        self.view = self.session_view()
         state = self.sessions.aggregate()
         active = self.sessions.active()
         agents = self.sessions.agent_count()
@@ -512,7 +500,7 @@ class Tray:
             )
         percents = " · ".join(
             "%s %.0f%%" % (w["label"], w["percent"]) for w in self.claude_limits.windows[:2]
-        )
+        ) if self.settings["show_claude"] else ""
         if percents:
             lines.append(percents)
 
@@ -525,7 +513,10 @@ class Tray:
         self.icon.title = tooltip
 
     def run_loop(self):
-        self.refresh_usage()
+        # Off the loop, so sessions show at once; the menu meanwhile shows the
+        # limits cached from the last run rather than "loading…".
+        self.refresh_in_background()
+        self.panel.start()
         last_usage = time.time()
         while not self.stopping.is_set():
             try:

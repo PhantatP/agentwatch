@@ -120,34 +120,48 @@ def codex_windows(limits: dict) -> list:
 
 
 class ClaudeLimits:
-    """Polls the endpoint at most every REFRESH_SECONDS, keeping the last good value."""
+    """Polls the endpoint at most every REFRESH_SECONDS, keeping the last good
+    value -- on disk too, so a freshly started tray shows it at once instead of
+    "loading…" while the first request is in flight."""
 
     def __init__(self):
         self.windows = []
         self.fetched_at = 0.0
         self.error = ""
+        self._load()
 
-    def maybe_refresh(self, force: bool = False) -> None:
-        if not force and time.time() - self.fetched_at < REFRESH_SECONDS:
+    def _load(self) -> None:
+        try:
+            with open(paths.LIMITS_CACHE, "r", encoding="utf-8") as fh:
+                cached = json.load(fh)
+            now = time.time()
+            # A window that has reset since is no longer true; leave it out.
+            self.windows = [w for w in cached["windows"] if not w["resets_at"] or w["resets_at"] > now]
+            self.fetched_at = float(cached["fetched_at"])
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+
+    def _save(self) -> None:
+        paths.ensure_data()
+        try:
+            with open(paths.LIMITS_CACHE, "w", encoding="utf-8") as fh:
+                json.dump({"windows": self.windows, "fetched_at": self.fetched_at}, fh)
+        except OSError:
+            pass
+
+    def maybe_refresh(self, force: bool = False, max_age: float = REFRESH_SECONDS) -> None:
+        if not force and time.time() - self.fetched_at < max_age:
             return
         try:
             result = fetch_claude()
             self.windows = result["windows"]
             self.fetched_at = result["fetched_at"]
             self.error = ""
+            self._save()
         except urllib.error.HTTPError as exc:
             self.error = "sign in to Claude Code" if exc.code in (401, 403) else "HTTP %d" % exc.code
         except (OSError, ValueError, KeyError) as exc:
             self.error = type(exc).__name__
-
-
-def bar(percent: float, width: int = 8) -> str:
-    """A dot meter. Every glyph has the same advance width in Segoe UI, so rows
-    stay aligned in the proportional font Windows uses for tray menus."""
-    filled = max(0, min(width, int(round(percent / 100.0 * width))))
-    if percent > 0 and filled == 0:
-        filled = 1  # never render real usage as empty
-    return "●" * filled + "○" * (width - filled)
 
 
 def age(ts: float) -> str:

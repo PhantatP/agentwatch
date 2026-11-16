@@ -24,7 +24,7 @@ not depend on telling the hues apart:
 | Thin outline | Grey | Nothing running, or sessions open but quiet |
 
 Green is news only briefly: 2 minutes after a turn ends, the session goes quiet
-and the icon returns to grey (the session stays listed in the menu as idle). An
+and the icon returns to grey (the session stays listed in the panel as idle). An
 editor's session panel stays open for hours, and green that long stopped meaning
 "just finished". A session you have only just opened has finished nothing, so it
 starts out grey too. Claude's "waiting for your input" reminder, sent 60 seconds
@@ -47,58 +47,61 @@ badge never hides a segment. The taskbar theme is read from the registry on
 every refresh, so switching it recolours Codex straight away.
 
 The glyph is drawn at 8x and downsampled, so it stays crisp at every DPI. A
-numbered badge appears when more than one session is live. Hover for a tooltip;
-right-click for the full breakdown:
+numbered badge appears when more than one session is live. Hover for a tooltip.
 
-```
-SESSIONS
-  ● codex   my-ai-workflows · needs you · 8s
-  ◐ claude  indicator · running · 1m12s · 2 agents
-        Edit tray.py
-        ↳ reviewer · Falsify core.py fixes — Bash Run tests
-        ↳ Explore · Find hook wiring — thinking
-────────────────────────────────────────────
-CLAUDE
-  ●●○○○○○○   28%   5h block · resets 4h04m
-  ●○○○○○○○   13%   week · resets 5d
-CODEX
-  ●○○○○○○○    9%   7d · 36d ago
-TOKENS
-  today   claude 50.1M · codex 0
-  7 days  claude 54.1M · codex 0
-HOOKS
-  claude  last event 2m ago
-! codex   hooks not firing · used 11m ago, last event 15d ago · check trust in codex /hooks
-────────────────────────────────────────────
-✓ Toasts
-✓ Flash taskbar
-  Refresh usage now
-  Open data folder
-  Quit
-```
+## The panel
 
-Only the section headers are disabled items. Windows renders disabled text in a
-grey so light it is hard to read, so every row carrying real information stays
-enabled and renders in normal text. Each meter leads its row because its glyphs
-are all one width, which keeps the columns aligned in the proportional font
-Windows uses for tray menus. Clicking a session flashes the terminal that owns
-it; clicking a usage row refreshes.
+Click the tray icon — either button; there is no menu — for a panel above the
+taskbar, drawn in the taskbar's light or dark theme. Click it again, press Esc,
+or click elsewhere to close it.
 
-**HOOKS** says whether each tool's wiring works. A hook fails silently by design
-— it must never break the agent's turn — so a broken one looks exactly like a
-tool nobody is using. Each tool shows its last hook event, or `!` and why it is
-quiet: `hooks not installed`, or `hooks not firing` when its transcripts changed
-more than 2 hours after its last event (every turn fires at its start and end,
-so only a single turn longer than that could trip it). A `!` row also appears if
-`agentwatch.log` holds errors; clicking it opens the data folder.
+- **Sessions** — every live session: its state and how long it has been in
+  it, then what it is doing now — the tool it is in and what that tool is
+  acting on, or `thinking` / `writing` between tools — one `↳` line per live
+  subagent, named from its type and task, and one per outstanding background
+  task. Clicking a session flashes the window that hosts it. An idle Claude or
+  Codex session has an **End** link (below).
+- **Usage** — the Claude / Codex pills hide or show an app everywhere usage
+  appears, here and in the tooltip. Then:
+  - **Limits** — every window as a bar, with when it resets (Claude) or how
+    old the snapshot is (Codex). A window at 90% or more turns red with a ⚠.
+  - **Tokens** — today, 7 days, and the current 5h block, per app.
+  - **Last 7 days** — a stacked bar per day; hover a day for its numbers.
+  - **Claude by model** — Opus / Sonnet / Haiku / Fable, today and 7 days.
+- **Hooks** — whether each tool's wiring works. A hook fails silently by
+  design — it must never break the agent's turn — so a broken one looks exactly
+  like a tool nobody is using. Each tool shows its last hook event, or ⚠ and why
+  it is quiet: `hooks not installed`, or `hooks not firing` when its transcripts
+  changed more than 2 hours after its last event (every turn fires at its start
+  and end, so only a single turn longer than that could trip it). A ⚠ line also
+  appears if `agentwatch.log` holds errors; clicking it opens the data folder.
+- **Footer** — the Toasts and Flash taskbar switches, Open data folder, and
+  Quit agentwatch.
+
+⚙ shows a row of pills that picks which sections are shown. Choices are
+remembered in `settings.json`. Opening the panel refreshes anything more than a
+minute old; ⟳ refreshes now. The panel redraws only when something it shows
+changes, so it holds still while you read it. All of the session detail comes
+from the transcript tails the tray already reads, so it adds nothing to hook
+latency.
 
 When a usage window passes 90% you get one toast, and not another until that
-window resets — the meters are otherwise only seen with the menu open.
+window resets — the meters are otherwise only seen with the panel open.
 
-Under a running session is what it is doing now — the tool it is in and what
-that tool is acting on, or `thinking` / `writing` between tools — and one `↳`
-row per live subagent, named from its type and task. All of it comes from the
-transcript tails the tray already reads, so it adds nothing to hook latency.
+The tray keeps the last Claude limits on disk, so a freshly started tray shows
+them at once instead of `loading…`, and the first refresh runs off the main
+loop, so sessions appear straight away too.
+
+### Ending idle sessions
+
+**End** on an idle session, or **End all N idle sessions** when there are
+several, asks you to confirm, then ends that agent CLI and everything it
+started (shells, MCP servers) with `taskkill /T`, leaving the terminal or VS
+Code window that hosted it open; the conversation stays on disk and can be
+resumed. It refuses a pid that is no longer an agent CLI (`claude.exe`,
+`codex.exe`, `node.exe`) — Windows reuses pids — and skips a session that
+started working while the question was open. Antigravity is not offered: its
+pid is the editor itself.
 
 ## Notifications
 
@@ -107,10 +110,24 @@ and a taskbar flash on the terminal window that owns the session — found by
 walking up the process tree from the agent CLI, so it works under Windows
 Terminal, pwsh, and VS Code alike.
 
-Subagents do not notify. While a Claude session has subagents running it keeps
-its working arc, and the main agent's `Stop` — both when it pauses to wait and
-when it wakes to read one agent's result — is silent. You get one "done" when
-the last agent has finished and the main agent wraps up.
+Only the main agent finishing notifies, once everything it started is done.
+Background work wakes the main agent each time a piece of it ends, and every
+wake-up ends in a `Stop` — one prompt that fanned out produced 13 of them. So
+while a Claude session has any of these outstanding, it keeps its working arc
+and its `Stop` is silent:
+
+- subagents mid-turn (read from their transcripts, below);
+- background shells and monitors (`run_in_background`, or a command moved to
+  the background on timeout), until their `<task-notification>` arrives or
+  `TaskStop` ends them;
+- async agents, until they report back — and again after a `SendMessage`
+  resumes one.
+
+These come from the session transcript, read incrementally. You get one "done"
+when the last of them has ended and the main agent wraps up. A launch that has
+not reported back within an hour is presumed gone with its CLI, so it cannot
+hold the "done" back forever. Outstanding tasks are listed under the session as
+`↳ background · <description>`.
 
 Nothing is shown when the window hosting the session is already in front — you
 are looking at it. A *different* window of the same app does not count: every
@@ -155,7 +172,7 @@ the same sources they do.
 | Codex limit % | Exact, but only as fresh as Codex's last turn. Codex's server attaches a `rate_limits` snapshot to every API response, which lands in the session transcript, so no call is needed. The age is shown beside it, e.g. `9% (36d ago)`. |
 | Token totals (today, 7d) | Derived from transcripts, for both tools. These include cache reads, which is why a busy day reads in the tens of millions — that is not what your plan meters, which is why the percentages above are the numbers to trust. |
 
-If the stored OAuth token has expired the menu says `sign in to Claude Code`
+If the stored OAuth token has expired the panel says `sign in to Claude Code`
 rather than attempting a refresh — refreshing would mean writing to a credentials
 file Claude Code owns.
 
@@ -209,7 +226,7 @@ To remove everything:
 python install.py --uninstall
 ```
 
-Uninstall leaves the tray running; quit it from its menu.
+Uninstall leaves the tray running; quit it from its panel.
 
 ## How it works
 
@@ -238,7 +255,8 @@ OneDrive, so it does not generate sync traffic:
 | `events.jsonl` | Hook event log, trimmed to the last 2000 lines |
 | `events.lock` | Taken briefly by every append, so simultaneous hooks cannot tear lines |
 | `usage_cache.json` | Per-file parse cache |
-| `settings.json` | Toast and flash toggles |
+| `settings.json` | Toast and flash toggles, and what the usage panel shows |
+| `limits_cache.json` | Last Claude limits, shown at startup until the first refresh |
 | `tray.pid` | Single-instance lock; only a live *Python* process holding that pid counts, since Windows reuses pids |
 | `agentwatch.log` | Errors only; normally empty |
 

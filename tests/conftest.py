@@ -67,6 +67,15 @@ def no_real_tray_icon(monkeypatch):
     monkeypatch.setattr(tray.pystray, "Icon", _FakeIcon)
 
 
+@pytest.fixture(autouse=True)
+def private_data_files(tmp_path, monkeypatch):
+    """Settings and the limits cache go to a temp folder, never the real one."""
+    from agentwatch import tray
+
+    monkeypatch.setattr(paths, "LIMITS_CACHE", tmp_path / "limits_cache.json")
+    monkeypatch.setattr(tray, "SETTINGS_FILE", tmp_path / "settings.json")
+
+
 @pytest.fixture
 def events(tmp_path, monkeypatch):
     """An empty event log, and a helper that appends one event for session S

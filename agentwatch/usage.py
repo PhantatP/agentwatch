@@ -244,6 +244,30 @@ def _daily(entries: list) -> dict:
     return buckets
 
 
+FAMILIES = ("Opus", "Sonnet", "Haiku", "Fable")
+
+
+def model_family(model: str) -> str:
+    """'claude-opus-5-5' -> 'Opus'. Unknown names are kept as written."""
+    lowered = (model or "").lower()
+    for family in FAMILIES:
+        if family.lower() in lowered:
+            return family
+    return model or "Other"
+
+
+def _by_model(entries: list, days: list) -> dict:
+    """Family -> token total over the given local dates."""
+    wanted, totals = set(days), {}
+    for entry in entries:
+        if not entry[0] or entry[6].startswith("<"):  # <synthetic>: no real request
+            continue
+        if datetime.fromtimestamp(entry[0]).strftime("%Y-%m-%d") in wanted:
+            family = model_family(entry[6])
+            totals[family] = totals.get(family, 0) + entry[1]
+    return totals
+
+
 def latest_codex_limits():
     """Newest rate_limits snapshot, even from a session older than KEEP_DAYS.
 
@@ -305,6 +329,7 @@ def collect() -> dict:
             "today": claude_daily.get(today, 0),
             "week": sum(claude_daily.get(day, 0) for day in week),
             "daily": claude_daily,
+            "models": {"today": _by_model(claude_entries, [today]), "week": _by_model(claude_entries, week)},
         },
         "codex": {
             "block": _active_block(codex_entries),

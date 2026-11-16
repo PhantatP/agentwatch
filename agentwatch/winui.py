@@ -112,6 +112,14 @@ def is_foreground(pid: int, cwd: str = "") -> bool:
     return hwnd is not None and hwnd == _user32.GetForegroundWindow()
 
 
+def confirm(title: str, text: str) -> bool:
+    """A Yes/No question in front of everything; Yes -> True. Blocks."""
+    MB_YESNO, MB_ICONWARNING, MB_DEFBUTTON2 = 0x4, 0x30, 0x100
+    MB_SETFOREGROUND, MB_TOPMOST, IDYES = 0x10000, 0x40000, 6
+    flags = MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_SETFOREGROUND | MB_TOPMOST
+    return _user32.MessageBoxW(None, text, title, flags) == IDYES
+
+
 def flash_for_pid(pid: int, cwd: str = "", count: int = 4) -> bool:
     """Flash the window hosting the session. Returns whether one was found."""
     hwnd = session_window(pid, cwd, fallback=True)
