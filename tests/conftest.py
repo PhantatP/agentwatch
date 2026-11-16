@@ -65,6 +65,9 @@ def no_real_tray_icon(monkeypatch):
     from agentwatch import tray
 
     monkeypatch.setattr(tray.pystray, "Icon", _FakeIcon)
+    # Never show a real toast or touch the real registry from a test.
+    monkeypatch.setattr(tray.winui, "toast", lambda title, body: None)
+    monkeypatch.setattr(tray.winui, "register_app", lambda icon_path="": None)
 
 
 @pytest.fixture(autouse=True)

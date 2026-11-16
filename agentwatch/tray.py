@@ -238,6 +238,14 @@ class Tray:
         self.stopping = threading.Event()
         self.panel = panel.Panel(self)
         self.view = []  # the sessions as the panel lists them; see session_view
+        try:
+            # The sender's icon in toasts and in Settings: the tray's own glyph.
+            paths.ensure_data()
+            icon_file = paths.DATA / "icon.png"
+            make_icon("idle", 1, size=128).save(icon_file)
+            winui.register_app(str(icon_file))
+        except Exception as exc:
+            self._log("could not register for toasts: %r" % (exc,))
         self.icon = pystray.Icon("agentwatch", make_icon("none", 0), "agentwatch")
         # No menu: either button opens the panel. pystray looks its handlers up
         # per message, so the click handler can be swapped for ours.
@@ -385,7 +393,7 @@ class Tray:
                 title = "%s %s limit at %.0f%%" % (tool_name(tool), window["label"], window["percent"])
                 body = "Resets in %s." % usage.human_until(resets) if resets else "Usage is nearly used up."
                 try:
-                    self.icon.notify(body, title)
+                    winui.toast(title, body)
                 except Exception:
                     pass
 
@@ -435,7 +443,7 @@ class Tray:
         body = "%s — in %s" % (message.rstrip(". "), project) if message else body % project
         if self.settings["toasts"]:
             try:
-                self.icon.notify(_fit(body, 170), _fit(title % tool_name(sess.tool), 56))
+                winui.toast(_fit(title % tool_name(sess.tool), 56), _fit(body, 170))
             except Exception:
                 pass
         if self.settings["flash"] and kind != "aborted":

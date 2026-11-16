@@ -110,6 +110,15 @@ and a taskbar flash on the terminal window that owns the session — found by
 walking up the process tree from the agent CLI, so it works under Windows
 Terminal, pwsh, and VS Code alike.
 
+Toasts are sent under agentwatch's own app id, registered per user under
+`HKCU\Software\Classes\AppUserModelId\agentwatch`, so they are listed as
+**agentwatch** in Settings → System → Notifications, where they can be muted
+or unmuted. Each is shown by a short-lived Windows PowerShell (`powershell.exe`)
+call to the WinRT toast API, taking about 0.6s, off the tray's loop. Earlier
+versions used a tray balloon instead, which Windows files under an id derived
+from `pythonw.exe`: listed nameless or as "Python", a muted one could not be
+found to unmute.
+
 Only the main agent finishing notifies, once everything it started is done.
 Background work wakes the main agent each time a piece of it ends, and every
 wake-up ends in a `Stop` — one prompt that fanned out produced 13 of them. So
@@ -257,6 +266,7 @@ OneDrive, so it does not generate sync traffic:
 | `usage_cache.json` | Per-file parse cache |
 | `settings.json` | Toast and flash toggles, and what the usage panel shows |
 | `limits_cache.json` | Last Claude limits, shown at startup until the first refresh |
+| `icon.png` | The tray glyph, shown beside agentwatch's toasts and in Settings |
 | `tray.pid` | Single-instance lock; only a live *Python* process holding that pid counts, since Windows reuses pids |
 | `agentwatch.log` | Errors only; normally empty |
 

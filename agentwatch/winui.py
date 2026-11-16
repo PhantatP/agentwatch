@@ -4,8 +4,12 @@ A hook records its parent pid, which is the agent CLI. The window we want to
 flash belongs to whatever terminal hosts it, so we walk up the process tree
 and flash the first ancestor that owns a visible top-level window.
 """
+
+import base64
 import ctypes
+import os
 import re
+import subprocess
 import winreg
 from ctypes import wintypes
 
@@ -71,7 +75,9 @@ def _by_title(hwnds: list, cwd: str):
     if len(hwnds) == 1:
         return hwnds[0]
     parts = [p.lower() for p in re.split(r"[\\/]+", cwd or "") if p][::-1][:4]
-    titles = {hwnd: [t.strip().lower() for t in _title(hwnd).split(" - ")] for hwnd in hwnds}
+    titles = {
+        hwnd: [t.strip().lower() for t in _title(hwnd).split(" - ")] for hwnd in hwnds
+    }
     for part in parts:
         for hwnd in hwnds:
             if part in titles[hwnd]:
@@ -110,6 +116,60 @@ def is_foreground(pid: int, cwd: str = "") -> bool:
     notified rather than missed."""
     hwnd = session_window(pid, cwd)
     return hwnd is not None and hwnd == _user32.GetForegroundWindow()
+
+
+# Toasts go out under agentwatch's own app id, registered below, so Windows
+# lists them as "agentwatch" in Settings > Notifications. A tray balloon is
+# filed under an id Windows derives from pythonw.exe: shown nameless or as
+# "Python" in Settings, and muted once, it could not be found to unmute.
+APP_ID = "agentwatch"
+
+# Windows PowerShell 5.1 (powershell.exe, not pwsh) can reach the WinRT toast
+# API with no extra Python packages. The text arrives in environment
+# variables, never in the command, so no message can break out of it.
+_TOAST = r"""
+[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
+$t = [Security.SecurityElement]::Escape($env:AGENTWATCH_TITLE)
+$b = [Security.SecurityElement]::Escape($env:AGENTWATCH_BODY)
+$x = New-Object Windows.Data.Xml.Dom.XmlDocument
+$x.LoadXml("<toast><visual><binding template='ToastGeneric'><text>$t</text><text>$b</text></binding></visual></toast>")
+$n = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($env:AGENTWATCH_APP)
+$n.Show([Windows.UI.Notifications.ToastNotification]::new($x))
+"""
+_TOAST_ARG = base64.b64encode(_TOAST.encode("utf-16-le")).decode("ascii")
+
+
+def register_app(icon_path: str = "") -> None:
+    """Make APP_ID a toast sender Windows knows by name (and icon). Per user,
+    so it needs no admin rights."""
+    key = "Software\\Classes\\AppUserModelId\\" + APP_ID
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key) as handle:
+        winreg.SetValueEx(handle, "DisplayName", 0, winreg.REG_SZ, "agentwatch")
+        if icon_path:
+            winreg.SetValueEx(handle, "IconUri", 0, winreg.REG_SZ, icon_path)
+
+
+def toast(title: str, body: str) -> None:
+    """Show a Windows toast. Returns at once; PowerShell shows it in ~0.6s."""
+    env = dict(
+        os.environ, AGENTWATCH_TITLE=title, AGENTWATCH_BODY=body, AGENTWATCH_APP=APP_ID
+    )
+    CREATE_NO_WINDOW = 0x08000000
+    subprocess.Popen(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-EncodedCommand",
+            _TOAST_ARG,
+        ],
+        env=env,
+        creationflags=CREATE_NO_WINDOW,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
 
 
 def confirm(title: str, text: str) -> bool:

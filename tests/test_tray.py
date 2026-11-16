@@ -45,7 +45,7 @@ def test_permission_is_not_held(events, quiet_tray):
 def _announce_with(monkeypatch, events, foreground):
     t = tray.Tray()
     shown, flashed = [], []
-    monkeypatch.setattr(t.icon, "notify", lambda body, title: shown.append(title))
+    monkeypatch.setattr(winui, "toast", lambda title, body: shown.append(title))
     monkeypatch.setattr(winui, "is_foreground", lambda pid, cwd: foreground)
     monkeypatch.setattr(winui, "flash_for_pid", lambda pid, cwd, **kw: flashed.append(pid))
     events("Stop")
@@ -70,7 +70,7 @@ def watched(events, monkeypatch):
     not as the test says, and a clock the test can move forward."""
     t = tray.Tray()
     t.toasts, t.in_front, t.clock = [], True, [time.time()]
-    monkeypatch.setattr(t.icon, "notify", lambda body, title: t.toasts.append(title))
+    monkeypatch.setattr(winui, "toast", lambda title, body: t.toasts.append(title))
     monkeypatch.setattr(winui, "is_foreground", lambda pid, cwd: t.in_front)
     monkeypatch.setattr(winui, "flash_for_pid", lambda pid, cwd, **kw: None)
     monkeypatch.setattr(time, "time", lambda: t.clock[0])
@@ -196,7 +196,7 @@ def _on_arc_single(image):
 def test_limit_warning_fires_once_per_window(monkeypatch):
     t = tray.Tray()
     shown = []
-    monkeypatch.setattr(t.icon, "notify", lambda body, title: shown.append(title))
+    monkeypatch.setattr(winui, "toast", lambda title, body: shown.append(title))
     resets = time.time() + 3600
     t.claude_limits.windows = [
         {"label": "5h block", "percent": 93.0, "resets_at": resets},
