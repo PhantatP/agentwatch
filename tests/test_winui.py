@@ -41,12 +41,30 @@ def test_another_window_of_the_same_app_is_not_foreground(monkeypatch):
 
 
 def test_toast_text_never_enters_the_command(monkeypatch):
-    calls = []
-    monkeypatch.setattr(winui.subprocess, "Popen", lambda args, **kw: calls.append((args, kw)))
+    import base64
+    import json
+
+    class FakeProcess:
+        def __init__(self, args, **kw):
+            self.args, self.stdin, self.written = args, self, []
+
+        def poll(self):
+            return None
+
+        def write(self, data):
+            self.written.append(data)
+
+        def flush(self):
+            pass
+
+    started = []
+    monkeypatch.setattr(winui.subprocess, "Popen", lambda args, **kw: started.append(FakeProcess(args)) or started[-1])
+    monkeypatch.setattr(winui, "_toaster", None)
     real_toast('Claude is done"; Remove-Item x', "Wrapped up in <indy> & co")
-    ((args, kw),) = calls
-    assert args[:2] == ["powershell.exe", "-NoProfile"]
-    assert "Remove-Item" not in " ".join(args)
-    assert kw["env"]["AGENTWATCH_TITLE"] == 'Claude is done"; Remove-Item x'
-    assert kw["env"]["AGENTWATCH_BODY"] == "Wrapped up in <indy> & co"
-    assert kw["env"]["AGENTWATCH_APP"] == "agentwatch"
+    real_toast("second", "reuses the same process")
+    (proc,) = started  # one PowerShell for both
+    assert proc.args[:2] == ["powershell.exe", "-NoProfile"]
+    assert "Remove-Item" not in " ".join(proc.args)
+    sent = [json.loads(base64.b64decode(line)) for line in proc.written]
+    assert sent[0] == {"title": 'Claude is done"; Remove-Item x', "body": "Wrapped up in <indy> & co"}
+    assert sent[1]["title"] == "second"

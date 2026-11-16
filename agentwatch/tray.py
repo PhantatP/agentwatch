@@ -18,7 +18,9 @@ from . import health, limits, panel, paths, proc, store, transcript, usage, winu
 
 POLL_SECONDS = 1.0
 USAGE_SECONDS = 20.0
-DONE_GRACE = 3.0  # hold a "done" this long in case the next turn starts at once
+# Hold a "done" this long in case the next turn starts at once: a queued
+# message or an agent's result follows a Stop within ~0.3s (measured).
+DONE_GRACE = 1.0
 # A hook's event reaches the tray within a second. One older than this is
 # history being re-read, not news, and is never announced.
 NEWS_WINDOW = 60
@@ -247,6 +249,7 @@ class Tray:
             icon_file = paths.DATA / "icon.png"
             make_icon("idle", 1, size=128).save(icon_file)
             winui.register_app(str(icon_file))
+            winui.warm_up()
         except Exception as exc:
             self._log("could not register for toasts: %r" % (exc,))
         self.icon = pystray.Icon("agentwatch", make_icon("none", 0), "agentwatch")

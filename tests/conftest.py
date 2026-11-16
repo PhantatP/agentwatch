@@ -68,6 +68,7 @@ def no_real_tray_icon(monkeypatch):
     # Never show a real toast or touch the real registry from a test.
     monkeypatch.setattr(tray.winui, "toast", lambda title, body: None)
     monkeypatch.setattr(tray.winui, "register_app", lambda icon_path="": None)
+    monkeypatch.setattr(tray.winui, "warm_up", lambda: None)
 
 
 @pytest.fixture(autouse=True)

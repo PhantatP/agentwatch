@@ -7,9 +7,11 @@ and flash the first ancestor that owns a visible top-level window.
 
 import base64
 import ctypes
+import json
 import os
 import re
 import subprocess
+import threading
 import winreg
 from ctypes import wintypes
 
@@ -125,19 +127,27 @@ def is_foreground(pid: int, cwd: str = "") -> bool:
 APP_ID = "agentwatch"
 
 # Windows PowerShell 5.1 (powershell.exe, not pwsh) can reach the WinRT toast
-# API with no extra Python packages. The text arrives in environment
-# variables, never in the command, so no message can break out of it.
-_TOAST = r"""
+# API with no extra Python packages. Starting it takes ~0.6s, so one instance
+# is kept running and fed one request per line: a toast then shows at once.
+# Each line is base64 of JSON, so no message text is ever part of a command.
+_TOASTER = r"""
 [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
 [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
-$t = [Security.SecurityElement]::Escape($env:AGENTWATCH_TITLE)
-$b = [Security.SecurityElement]::Escape($env:AGENTWATCH_BODY)
-$x = New-Object Windows.Data.Xml.Dom.XmlDocument
-$x.LoadXml("<toast><visual><binding template='ToastGeneric'><text>$t</text><text>$b</text></binding></visual></toast>")
 $n = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($env:AGENTWATCH_APP)
-$n.Show([Windows.UI.Notifications.ToastNotification]::new($x))
+while ($null -ne ($line = [Console]::In.ReadLine())) {
+    try {
+        $m = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($line)) | ConvertFrom-Json
+        $t = [Security.SecurityElement]::Escape($m.title)
+        $b = [Security.SecurityElement]::Escape($m.body)
+        $x = New-Object Windows.Data.Xml.Dom.XmlDocument
+        $x.LoadXml("<toast><visual><binding template='ToastGeneric'><text>$t</text><text>$b</text></binding></visual></toast>")
+        $n.Show([Windows.UI.Notifications.ToastNotification]::new($x))
+    } catch {}
+}
 """
-_TOAST_ARG = base64.b64encode(_TOAST.encode("utf-16-le")).decode("ascii")
+_TOASTER_ARG = base64.b64encode(_TOASTER.encode("utf-16-le")).decode("ascii")
+_toaster = None  # the running PowerShell, started on first use
+_toaster_lock = threading.Lock()
 
 
 def register_app(icon_path: str = "") -> None:
@@ -150,26 +160,41 @@ def register_app(icon_path: str = "") -> None:
             winreg.SetValueEx(handle, "IconUri", 0, winreg.REG_SZ, icon_path)
 
 
-def toast(title: str, body: str) -> None:
-    """Show a Windows toast. Returns at once; PowerShell shows it in ~0.6s."""
-    env = dict(
-        os.environ, AGENTWATCH_TITLE=title, AGENTWATCH_BODY=body, AGENTWATCH_APP=APP_ID
-    )
+def _start_toaster():
     CREATE_NO_WINDOW = 0x08000000
-    subprocess.Popen(
-        [
-            "powershell.exe",
-            "-NoProfile",
-            "-NonInteractive",
-            "-EncodedCommand",
-            _TOAST_ARG,
-        ],
-        env=env,
+    return subprocess.Popen(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", _TOASTER_ARG],
+        env=dict(os.environ, AGENTWATCH_APP=APP_ID),
         creationflags=CREATE_NO_WINDOW,
-        stdin=subprocess.DEVNULL,
+        stdin=subprocess.PIPE,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+
+
+def warm_up() -> None:
+    """Start the toast process now, so the first toast is not the slow one.
+    It exits by itself when the tray does: its input closes."""
+    global _toaster
+    with _toaster_lock:
+        if _toaster is None or _toaster.poll() is not None:
+            _toaster = _start_toaster()
+
+
+def toast(title: str, body: str) -> None:
+    """Show a Windows toast. Returns at once."""
+    global _toaster
+    line = base64.b64encode(json.dumps({"title": title, "body": body}).encode("utf-8")) + b"\n"
+    with _toaster_lock:
+        for _attempt in range(2):  # once more with a fresh process if it died
+            if _toaster is None or _toaster.poll() is not None:
+                _toaster = _start_toaster()
+            try:
+                _toaster.stdin.write(line)
+                _toaster.stdin.flush()
+                return
+            except OSError:
+                _toaster = None
 
 
 def confirm(title: str, text: str) -> bool:
