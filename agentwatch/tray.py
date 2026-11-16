@@ -19,6 +19,9 @@ from . import health, limits, panel, paths, proc, store, transcript, usage, winu
 POLL_SECONDS = 1.0
 USAGE_SECONDS = 20.0
 DONE_GRACE = 3.0  # hold a "done" this long in case the next turn starts at once
+# A hook's event reaches the tray within a second. One older than this is
+# history being re-read, not news, and is never announced.
+NEWS_WINDOW = 60
 WARN_PERCENT = 90  # toast once a limit window passes this
 # A wait you got no toast for is reminded once it has gone unanswered this long.
 REMIND_AFTER = {"permission": 60, "done": 180}
@@ -456,12 +459,13 @@ class Tray:
 
     def tick(self):
         pending = self.sessions.poll()
+        now = time.time()
         if self.first_poll:
             # Rebuild state from history without replaying old notifications.
             self.first_poll = False
             pending = [pair for pair in pending if pair[0].get("ts", 0) >= self.started]
+        pending = [pair for pair in pending if now - pair[0].get("ts", now) <= NEWS_WINDOW]
         self.held += pending
-        now = time.time()
         for event, sess in list(self.held):
             if event.get("event") == "Stop" and sess.last_event != "Stop":
                 # A new turn began right after this Stop -- a queued message or
@@ -531,7 +535,7 @@ class Tray:
                 self.tick()
                 if time.time() - last_usage >= USAGE_SECONDS:
                     self.refresh_usage()
-                    store.rotate_if_large()
+                    self.sessions.offset = store.rotate_if_large(self.sessions.offset)
                     last_usage = time.time()
             except Exception as exc:
                 self._log("tick error: %r" % (exc,))

@@ -1,7 +1,14 @@
 import time
 
-from agentwatch import store
-from conftest import END_TURN, HANDBACK, PROMPT, stamped as _stamped, tool_use, write_rows
+from agentwatch import paths, store
+from conftest import (
+    END_TURN,
+    HANDBACK,
+    PROMPT,
+    stamped as _stamped,
+    tool_use,
+    write_rows,
+)
 
 
 def test_live_session_survives_reconcile(events):
@@ -27,7 +34,10 @@ def test_interrupt_after_the_turn_started_still_ends_it(events):
     sessions = store.Sessions()
     events("UserPromptSubmit")
     sessions.poll()
-    interrupted = {"type": "user", "message": {"content": "[Request interrupted by user]"}}
+    interrupted = {
+        "type": "user",
+        "message": {"content": "[Request interrupted by user]"},
+    }
     write_rows(events.transcript, PROMPT, _stamped(interrupted, time.time() + 1))
     sessions.reconcile()
     assert sessions.aggregate() == "idle"
@@ -69,7 +79,10 @@ def test_answered_permission_prompt_returns_to_running(events):
     sessions.poll()
     sessions.reconcile()
     assert sessions.aggregate() == "waiting"  # the tool_use predates the prompt
-    result = {"type": "user", "message": {"content": [{"type": "tool_result", "content": "ok"}]}}
+    result = {
+        "type": "user",
+        "message": {"content": [{"type": "tool_result", "content": "ok"}]},
+    }
     write_rows(events.transcript, PROMPT, tool_use("Bash"), _stamped(result, asked + 5))
     sessions.reconcile()
     assert sessions.aggregate() == "running"
@@ -168,3 +181,46 @@ def test_session_reads_running_while_agents_work(events):
     (sess,) = sessions.active()
     assert sess.status == "idle"
     assert sess.state == "running"
+
+
+def _fill_log(events, count, pad):
+    for i in range(count):
+        events("Stop", sid="old%d" % i, message=pad)
+
+
+def test_trimming_the_log_replays_nothing(events, monkeypatch):
+    """The trim used to rewrite the log in text mode, turning every \n into
+    \r\n, so the file no longer matched the reader's offset: it either
+    re-read the whole log -- every old Stop toasting again -- or resumed
+    mid-file. Each new event must be read exactly once."""
+    monkeypatch.setattr(store, "MAX_EVENTS_BYTES", 20_000)
+    _fill_log(events, 200, "x" * 120)  # well over the cap
+    sessions = store.Sessions()
+    sessions.poll()
+    sessions.offset = store.rotate_if_large(sessions.offset)
+    assert sessions.poll() == []  # trimming alone reads nothing new
+    for round_ in range(5):
+        events("UserPromptSubmit", sid="new%d" % round_)
+        events("Stop", sid="new%d" % round_)  # shorter than the lines trimmed off
+        sessions.offset = store.rotate_if_large(sessions.offset)
+        said = [(ev["session"], ev["event"]) for ev, _s in sessions.poll()]
+        assert said == [("new%d" % round_, "Stop")]
+
+
+def test_trim_leaves_room_so_it_does_not_rewrite_every_cycle(events, monkeypatch):
+    monkeypatch.setattr(store, "MAX_EVENTS_BYTES", 20_000)
+    _fill_log(events, 200, "x" * 120)
+    caught_up = paths.EVENTS.stat().st_size  # the reader has read it all
+    offset = store.rotate_if_large(caught_up)
+    trimmed = paths.EVENTS.stat().st_size
+    assert offset == trimmed <= store.MAX_EVENTS_BYTES // 2
+    assert store.rotate_if_large(offset) == offset
+    assert paths.EVENTS.stat().st_size == trimmed  # under the cap: left alone
+
+
+def test_trim_never_cuts_events_not_yet_read(events, monkeypatch):
+    monkeypatch.setattr(store, "MAX_EVENTS_BYTES", 20_000)
+    _fill_log(events, 200, "x" * 120)
+    sessions = store.Sessions()
+    sessions.offset = store.rotate_if_large(0)  # nothing read yet
+    assert len(sessions.poll()) == 200

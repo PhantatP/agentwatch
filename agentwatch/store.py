@@ -3,6 +3,7 @@
 Hooks only append; the tray derives everything. That keeps hook latency low,
 which matters because a hook blocks the CLI turn while it runs.
 """
+
 import contextlib
 import json
 import msvcrt
@@ -78,20 +79,35 @@ def append(event: dict) -> None:
         fh.write(line)
 
 
-def rotate_if_large() -> None:
-    """Keep the tail only. Called by the tray, never by a hook. Locked, so an
-    event appended mid-rotation is not lost with the old file."""
+def rotate_if_large(offset: int) -> int:
+    """Keep the tail only, and return where a reader that had read up to
+    `offset` should continue in the trimmed file. Called by the tray, never by
+    a hook. Locked, so an event appended mid-rotation is not lost.
+
+    Bytes are kept exactly: rewritten in text mode, every \\n became \\r\\n,
+    and the reader's offset stopped matching the file -- it re-read the whole
+    log, toasting every old Stop again. Trims to half the cap, so the file is
+    not rewritten on every check."""
     try:
         if paths.EVENTS.stat().st_size <= MAX_EVENTS_BYTES:
-            return
+            return offset
     except OSError:
-        return
+        return offset
     with _locked():
-        lines = paths.EVENTS.read_text(encoding="utf-8", errors="replace").splitlines()
-        keep = lines[-2000:]
+        data = paths.EVENTS.read_bytes()
+        unread = data[min(offset, len(data)) :]  # appended since the reader's last poll
+        start = len(data) - MAX_EVENTS_BYTES // 2
+        start = (
+            data.index(NEWLINE, start) + 1
+            if data.find(NEWLINE, start) != -1
+            else len(data)
+        )
+        start = min(start, len(data) - len(unread))  # never cut into what is unread
+        keep = data[start:]
         tmp = paths.EVENTS.with_suffix(".tmp")
-        tmp.write_text("\n".join(keep) + "\n", encoding="utf-8")
+        tmp.write_bytes(keep)
         os.replace(tmp, paths.EVENTS)
+        return len(keep) - len(unread)
 
 
 def read_events(offset: int = 0):
@@ -168,7 +184,9 @@ class Sessions:
         notifications = []
         for ev in events:
             tool, sid = ev.get("tool", "?"), ev.get("session", "?")
-            self.last_event[tool] = max(self.last_event.get(tool, 0.0), ev.get("ts", 0.0))
+            self.last_event[tool] = max(
+                self.last_event.get(tool, 0.0), ev.get("ts", 0.0)
+            )
             key = (tool, sid)
             name = ev.get("event", "")
             sess = self.by_key.get(key)
@@ -240,7 +258,9 @@ class Sessions:
 
     def active(self):
         order = {"waiting": 0, "running": 1, "idle": 2, "quiet": 3}
-        return sorted(self.by_key.values(), key=lambda s: (order.get(s.state, 3), -s.since))
+        return sorted(
+            self.by_key.values(), key=lambda s: (order.get(s.state, 3), -s.since)
+        )
 
     def agent_count(self) -> int:
         return sum(len(s.agents) for s in self.by_key.values())

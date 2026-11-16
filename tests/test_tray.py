@@ -225,3 +225,12 @@ def test_fit_trims_on_a_word_boundary():
     assert tray._fit("one two three four", 16) == "one two three…"
     # a space too early to cut at (before 60% of the limit) is not used
     assert tray._fit("one two three four", 12) == "one two thr…"
+
+
+def test_history_is_never_announced(events, quiet_tray, monkeypatch):
+    """However old events come to be re-read, they are not news."""
+    events("Stop", ts=time.time() - tray.NEWS_WINDOW - 5)
+    quiet_tray.tick()
+    monkeypatch.setattr(time, "time", lambda real=time.time: real() + tray.DONE_GRACE + 1)
+    quiet_tray.tick()
+    assert quiet_tray.said == []
