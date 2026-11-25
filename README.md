@@ -33,6 +33,10 @@ alone. Then:
 The tray starts by itself on your next agent turn. To start it by hand:
 `python -m agentwatch.tray`.
 
+Codex on Windows runs hooks through PowerShell, which cannot run them if the
+path to Python or to this folder has a space in it. Keep both in paths
+without spaces.
+
 ## Uninstall
 
 ```
