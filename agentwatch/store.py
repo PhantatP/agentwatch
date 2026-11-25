@@ -147,7 +147,8 @@ class Session:
     tool: str
     sid: str
     cwd: str = ""
-    pid: int = 0
+    pid: int = 0  # a Linux pid when `wsl` names the distro the session runs in
+    wsl: str = ""
     model: str = ""
     transcript: str = ""
     status: str = "idle"
@@ -155,6 +156,11 @@ class Session:
     last_event: str = ""
     agents: dict = field(default_factory=dict)  # mid-turn subagent id -> transcript
     background: dict = field(default_factory=dict)  # pending task id -> label
+
+    @property
+    def win_pid(self) -> int:
+        """The pid for Windows window lookups: none for a WSL session."""
+        return 0 if self.wsl else self.pid
 
     @property
     def state(self) -> str:
@@ -195,7 +201,7 @@ class Sessions:
                 # rebuilt from history at startup, it would otherwise look new.
                 sess = Session(tool=tool, sid=sid, since=ev.get("ts", time.time()))
                 self.by_key[key] = sess
-            for attr in ("cwd", "pid", "model", "transcript"):
+            for attr in ("cwd", "pid", "wsl", "model", "transcript"):
                 if ev.get(attr):
                     setattr(sess, attr, ev[attr])
             status = STATUS_BY_EVENT.get(name)
@@ -231,7 +237,10 @@ class Sessions:
         prompt.
         """
         for key, sess in list(self.by_key.items()):
-            if sess.pid and not proc.process_alive(sess.pid):
+            # A WSL check reaches the distro's /proc. Were the distro stopped,
+            # that starts it, once: the pid is gone, so the session goes too.
+            alive = proc.wsl_alive(sess.wsl, sess.pid) if sess.wsl else proc.process_alive(sess.pid)
+            if sess.pid and not alive:
                 del self.by_key[key]
                 continue
             sess.agents = transcript.live_agents(sess.transcript)

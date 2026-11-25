@@ -296,6 +296,7 @@ class Tray:
             rows.append({
                 "sess": sess,
                 "tool": sess.tool,
+                "where": "WSL " + sess.wsl if sess.wsl else "",  # blank: Windows
                 "project": project_of(sess),
                 "state": sess.state,
                 "label": LABEL.get(sess.state, sess.state),
@@ -309,7 +310,7 @@ class Tray:
     def reveal(self, sess: store.Session):
         """Clicking a session flashes the window that hosts it."""
         try:
-            winui.flash_for_pid(sess.pid, sess.cwd, count=6)
+            winui.flash_for_pid(sess.win_pid, sess.cwd, count=6)
         except Exception:
             pass
 
@@ -348,7 +349,8 @@ class Tray:
         for sess in chosen:
             if sess.state not in ("idle", "quiet"):
                 continue  # it started working while the question was open
-            if proc.end_tree(sess.pid):
+            ended = proc.wsl_end(sess.wsl, sess.pid) if sess.wsl else proc.end_tree(sess.pid)
+            if ended:
                 self.sessions.by_key.pop((sess.tool, sess.sid), None)
             else:
                 self._log("could not end %s session %s (pid %s)" % (sess.tool, sess.sid, sess.pid))
@@ -416,7 +418,7 @@ class Tray:
 
     def announce(self, event: dict, sess: store.Session):
         try:
-            if winui.is_foreground(sess.pid, sess.cwd):
+            if winui.is_foreground(sess.win_pid, sess.cwd):
                 return  # you are looking at it -- remind() follows up if not
         except Exception:
             pass
@@ -454,7 +456,7 @@ class Tray:
                 pass
         if self.settings["flash"] and kind != "aborted":
             try:
-                winui.flash_for_pid(sess.pid, sess.cwd)
+                winui.flash_for_pid(sess.win_pid, sess.cwd)
             except Exception:
                 pass
 

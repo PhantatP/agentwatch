@@ -1,7 +1,10 @@
 """Small Win32 helpers that avoid a psutil dependency."""
 import ctypes
+import os
 import subprocess
 from ctypes import wintypes
+
+from . import paths
 
 _k32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
@@ -62,6 +65,62 @@ def end_tree(pid: int) -> bool:
     CREATE_NO_WINDOW = 0x08000000
     done = subprocess.run(
         ["taskkill", "/PID", str(int(pid)), "/T", "/F"],
+        capture_output=True,
+        creationflags=CREATE_NO_WINDOW,
+    )
+    return done.returncode == 0
+
+
+# A session run inside WSL records its CLI's Linux pid. Windows reads that
+# distro's /proc through \\wsl.localhost, a few ms a file while it runs. Linux
+# reuses pids too, so a process is ended only if its name is an agent CLI's.
+WSL_SHELLS = ("sh", "bash", "dash", "zsh", "fish")
+WSL_AGENTS = ("claude", "codex", "node")
+
+
+def _wsl_read(distro: str, pid: int, name: str) -> str:
+    try:
+        with open(paths.wsl_path(distro, "/proc/%d/%s" % (int(pid), name)), encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+    except OSError:
+        return ""
+
+
+def wsl_alive(distro: str, pid: int) -> bool:
+    return bool(pid) and os.path.isdir(paths.wsl_path(distro, "/proc/%d" % int(pid)))
+
+
+def wsl_name(distro: str, pid: int) -> str:
+    return _wsl_read(distro, pid, "comm").strip()
+
+
+def _wsl_stat(distro: str, pid: int) -> list:
+    """Fields of /proc/<pid>/stat after the name: state, ppid, pgrp, ..."""
+    return _wsl_read(distro, pid, "stat").rsplit(")", 1)[-1].split()
+
+
+def wsl_owner(distro: str, pid: int) -> int:
+    """The agent CLI behind a hook run in WSL. `pid` is the $PPID of the shell
+    that ran the hook command: the CLI itself, unless more shells sit between."""
+    for _ in range(8):
+        if wsl_name(distro, pid) not in WSL_SHELLS:
+            break
+        fields = _wsl_stat(distro, pid)
+        pid = int(fields[1]) if len(fields) > 1 and fields[1].isdigit() else 0
+    return pid
+
+
+def wsl_end(distro: str, pid: int) -> bool:
+    """End an agent CLI in WSL. When it leads its own process group, as a CLI
+    started from a terminal does, the whole group goes: the CLI and what it
+    started, but not the shell hosting it. Returns whether it was ended."""
+    if not wsl_alive(distro, pid) or wsl_name(distro, pid) not in WSL_AGENTS:
+        return False
+    fields = _wsl_stat(distro, pid)
+    target = "-%d" % pid if len(fields) > 2 and fields[2] == str(pid) else str(pid)
+    CREATE_NO_WINDOW = 0x08000000
+    done = subprocess.run(
+        ["wsl.exe", "-d", distro, "-e", "kill", "-TERM", "--", target],
         capture_output=True,
         creationflags=CREATE_NO_WINDOW,
     )

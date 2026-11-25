@@ -18,6 +18,11 @@ TRAY_LOCK = DATA / "tray.pid"
 LOG = DATA / "agentwatch.log"
 
 
+def wsl_path(distro: str, linux_path: str) -> str:
+    """A path inside a WSL distro, as Windows reaches it."""
+    return "\\\\wsl.localhost\\" + distro + linux_path.replace("/", "\\")
+
+
 def ensure_data() -> Path:
     DATA.mkdir(parents=True, exist_ok=True)
     return DATA

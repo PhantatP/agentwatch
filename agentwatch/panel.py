@@ -88,7 +88,7 @@ def signature(tray, customizing=False) -> str:
         sorted(tray.settings.items()),
         customizing,
         [
-            (r["tool"], r["project"], r["state"], r["age"], r["lines"], r["can_end"])
+            (r["tool"], r["where"], r["project"], r["state"], r["age"], r["lines"], r["can_end"])
             for r in tray.view
         ],
         [
@@ -417,7 +417,7 @@ class Panel:
             clickable = [
                 self._label(line, DOT.get(state, "○"), 10, tint),
                 self._label(line, row["project"], 9, bold=True, padx=self.px(4)),
-                self._label(line, row["tool"], 8, "muted"),
+                self._label(line, " · ".join(filter(None, (row["tool"], row["where"]))), 8, "muted"),
             ]
             for widget in clickable:
                 widget.pack(side="left")

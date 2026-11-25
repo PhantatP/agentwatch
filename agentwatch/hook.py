@@ -75,24 +75,37 @@ def main() -> int:
     if "--event" in argv:  # lets a config pin the event name explicitly
         event = argv[argv.index("--event") + 1]
 
+    transcript = payload.get("transcript_path") or payload.get("transcriptPath") or ""
+    distro = argv[argv.index("--wsl") + 1] if "--wsl" in argv else ""
+    if distro:
+        # Run from inside WSL through interop: this is Windows Python, and its
+        # parent is not the CLI. The hook command passes the shell's $PPID.
+        given = argv[argv.index("--wsl-pid") + 1] if "--wsl-pid" in argv else ""
+        pid = proc.wsl_owner(distro, int(given)) if given.isdigit() else 0
+        if transcript.startswith("/"):
+            transcript = paths.wsl_path(distro, transcript)
+    else:
+        pid = _owner_pid()
+
     # Antigravity names these differently: conversationId, workspacePaths, modelName.
     workspaces = payload.get("workspacePaths")
     workspace = workspaces[0] if isinstance(workspaces, list) and workspaces else ""
-    store.append(
-        {
-            "tool": tool,
-            "session": payload.get("session_id")
-            or payload.get("sessionId")
-            or payload.get("conversationId")
-            or "unknown",
-            "event": event,
-            "cwd": payload.get("cwd") or workspace or os.getcwd(),
-            "pid": _owner_pid(),
-            "model": payload.get("model") or payload.get("modelName") or "",
-            "message": payload.get("message") or "",
-            "transcript": payload.get("transcript_path") or payload.get("transcriptPath") or "",
-        }
-    )
+    record = {
+        "tool": tool,
+        "session": payload.get("session_id")
+        or payload.get("sessionId")
+        or payload.get("conversationId")
+        or "unknown",
+        "event": event,
+        "cwd": payload.get("cwd") or workspace or os.getcwd(),
+        "pid": pid,
+        "model": payload.get("model") or payload.get("modelName") or "",
+        "message": payload.get("message") or "",
+        "transcript": transcript,
+    }
+    if distro:
+        record["wsl"] = distro
+    store.append(record)
 
     if event in ("SessionStart", "UserPromptSubmit", "PreInvocation"):
         _spawn_tray()

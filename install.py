@@ -1,4 +1,4 @@
-"""Wire agentwatch into Claude Code and Codex.
+"""Wire agentwatch into Claude Code and Codex, on Windows and in WSL.
 
 Idempotent: every entry it adds carries an `agentwatch` marker, so re-running
 replaces its own entries and leaves any other hooks untouched. Both config
@@ -9,7 +9,9 @@ files are backed up before the first change.
 """
 import json
 import os
+import shlex
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -93,8 +95,8 @@ def strip_ours(hooks: dict) -> dict:
     return cleaned
 
 
-def claude_group(event: str) -> dict:
-    command = '"%s" "%s" --tool claude --event %s --source %s' % (
+def claude_group(event: str, command: str = "") -> dict:
+    command = command or '"%s" "%s" --tool claude --event %s --source %s' % (
         python_exe(), HOOK_ENTRY, event, MARKER)
     return {"hooks": [{"type": "command", "command": command, "timeout": 10}]}
 
@@ -115,10 +117,19 @@ def portable_command(tool: str, event: str) -> str:
         arg(python_exe()), arg(HOOK_ENTRY), tool, event, MARKER)
 
 
-def codex_group(event: str) -> dict:
+def wsl_command(python: str, tool: str, event: str, distro: str) -> str:
+    """A hook command for a CLI inside WSL. It runs Windows Python through WSL
+    interop, so the event lands in the same log, under the same lock, as one
+    from Windows. The shell running the hook expands $PPID: the CLI's pid."""
+    return "%s %s --tool %s --event %s --source %s --wsl %s --wsl-pid $PPID" % (
+        shlex.quote(python), shlex.quote(str(HOOK_ENTRY).replace(chr(92), "/")),
+        tool, event, MARKER, shlex.quote(distro))
+
+
+def codex_group(event: str, command: str = "") -> dict:
     # Codex wants `command` as a single string, not a list -- verified against
     # the app-server `hooks/list` RPC, which rejects a sequence outright.
-    command = portable_command("codex", event)
+    command = command or portable_command("codex", event)
     # Codex caps teardown hooks at 3s and always runs SessionEnd synchronously;
     # match that here so it has nothing to clamp or warn about.
     teardown = event in ("SessionEnd", "Interrupt")
@@ -134,14 +145,15 @@ def codex_group(event: str) -> dict:
     }
 
 
-def install_claude(remove: bool) -> str:
-    target = paths.CLAUDE_HOME / "settings.json"
+def install_claude(remove: bool, home: Path = None, command=None) -> str:
+    """`home` and `command(event)` default to Claude Code on Windows."""
+    target = (home or paths.CLAUDE_HOME) / "settings.json"
     settings = load_json(target)
     backup(target)
     hooks = strip_ours(settings.get("hooks") or {})
     if not remove:
         for event in CLAUDE_EVENTS:
-            hooks.setdefault(event, []).append(claude_group(event))
+            hooks.setdefault(event, []).append(claude_group(event, command(event) if command else ""))
     if hooks:
         settings["hooks"] = hooks
     else:
@@ -173,17 +185,19 @@ def drop_stray(stray: Path) -> None:
         pass
 
 
-def install_codex(remove: bool) -> str:
+def install_codex(remove: bool, home: Path = None, command=None) -> str:
+    """`home` and `command(event)` default to Codex on Windows."""
+    home = home or paths.CODEX_HOME
     # Codex reads ~/.codex/hooks.json. It does NOT read ~/.codex/hooks/hooks.json,
     # which is a plugin-only path -- files there are ignored without any warning.
-    drop_stray(paths.CODEX_HOME / "hooks" / "hooks.json")
-    target = paths.CODEX_HOME / "hooks.json"
+    drop_stray(home / "hooks" / "hooks.json")
+    target = home / "hooks.json"
     config = load_json(target)
     backup(target)
     hooks = strip_ours(config.get("hooks") or {})
     if not remove:
         for event in CODEX_EVENTS:
-            hooks.setdefault(event, []).append(codex_group(event))
+            hooks.setdefault(event, []).append(codex_group(event, command(event) if command else ""))
     config["hooks"] = hooks
     write_json(target, config)
     return str(target)
@@ -207,6 +221,50 @@ def install_antigravity(remove: bool) -> str:
     return str(target)
 
 
+def wsl(distro: str, *args) -> str:
+    """Run a program in a WSL distro: its output, or '' if it failed."""
+    try:
+        done = subprocess.run(["wsl.exe", "-d", distro, "-e", *args], capture_output=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return done.stdout.decode("utf-8", "replace").strip() if done.returncode == 0 else ""
+
+
+def wsl_distros() -> list:
+    """Installed WSL distros, less Docker Desktop's own."""
+    try:
+        done = subprocess.run(["wsl.exe", "--list", "--quiet"], capture_output=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if done.returncode != 0:
+        return []
+    raw = done.stdout  # UTF-16, unless WSL_UTF8 is set
+    text = raw.decode("utf-16-le" if bytes(1) in raw else "utf-8", "replace")
+    names = [line.strip().lstrip(chr(0xFEFF)) for line in text.splitlines()]
+    return [name for name in names if name and not name.startswith("docker-desktop")]
+
+
+def install_wsl(remove: bool) -> list:
+    """Hooks for Claude Code and Codex in each WSL distro that has them. Each
+    distro has its own home, so its CLIs never read the Windows config."""
+    lines = []
+    for distro in wsl_distros():
+        home = wsl(distro, "printenv", "HOME")
+        python = wsl(distro, "wslpath", "-u", python_exe())
+        if not home.startswith("/") or not python:
+            lines.append("wsl %s -> skipped (could not read it)" % distro)
+            continue
+        root = Path(paths.wsl_path(distro, home))
+        for tool, install in (("claude", install_claude), ("codex", install_codex)):
+            label = "wsl %s %s -> " % (distro, tool)
+            if not (root / ("." + tool)).is_dir():
+                lines.append(label + "skipped (%s not found)" % tool)
+                continue
+            command = lambda event, tool=tool: wsl_command(python, tool, event, distro)  # noqa: E731
+            lines.append(label + install(remove, root / ("." + tool), command))
+    return lines
+
+
 def main(argv) -> int:
     remove = "--uninstall" in argv
     if not HOOK_ENTRY.exists():
@@ -217,6 +275,8 @@ def main(argv) -> int:
     print("  claude -> " + install_claude(remove))
     print("  codex  -> " + install_codex(remove))
     print("  antigravity -> " + install_antigravity(remove))
+    for line in install_wsl(remove):
+        print("  " + line)
     print("  state  -> " + str(paths.DATA))
     if not remove:
         print(chr(10) + "The tray starts itself on the next agent turn.")

@@ -37,6 +37,18 @@ Codex on Windows runs hooks through PowerShell, which cannot run them if the
 path to Python or to this folder has a space in it. Keep both in paths
 without spaces.
 
+## WSL
+
+Claude Code and Codex running inside WSL 2 show up in the same tray.
+`install.py`, run on Windows as above, also adds hooks in each WSL distro
+that has a `~/.claude` or `~/.codex` folder. Those hooks run your Windows
+Python through WSL interop, so nothing needs installing inside WSL. If you
+install a CLI in WSL later, run `python install.py` again.
+
+For WSL sessions, the tray can't find or flash the terminal window, so you
+get a toast even while you're looking at the session. Token totals and usage
+limits count Windows sessions only.
+
 ## Uninstall
 
 ```
