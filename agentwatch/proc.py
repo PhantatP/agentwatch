@@ -53,7 +53,7 @@ def python_alive(pid: int) -> bool:
 # What a session's pid may be when the tray is asked to end it. The hook records
 # the agent CLI itself; anything else means Windows reused the pid, and ending
 # it would kill an unrelated program.
-AGENT_EXES = ("claude.exe", "codex.exe", "node.exe")
+AGENT_EXES = ("claude.exe", "codex.exe", "node.exe", "agy.exe")
 
 
 def end_tree(pid: int) -> bool:

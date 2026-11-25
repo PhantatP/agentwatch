@@ -188,8 +188,10 @@ def test_only_idle_agent_cli_sessions_can_be_ended(events):
     events("UserPromptSubmit", sid="busy")
     events("Stop", sid="done")
     events("Stop", sid="ide", tool="antigravity")
+    cli = r"C:\Users\u\.gemini\antigravity-cli\brain\cli\transcript_full.jsonl"
+    events("Stop", sid="cli", tool="antigravity", transcript=cli)
     t.sessions.poll()
-    assert [s.sid for s in t.idle_sessions()] == ["done"]
+    assert sorted(s.sid for s in t.idle_sessions()) == ["cli", "done"]
 
 
 def test_ending_asks_first_and_refuses_a_pid_that_is_not_an_agent(events, monkeypatch):

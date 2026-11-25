@@ -321,11 +321,14 @@ class Tray:
     # ---------- ending idle sessions ----------
 
     def idle_sessions(self):
-        """Sessions with nothing running that the tray can end: an agent CLI,
-        not Antigravity, whose pid is the editor itself."""
+        """Sessions with nothing running that the tray can end: an agent CLI.
+        Not the Antigravity IDE, whose pid is the editor itself -- only its CLI,
+        which keeps its conversations under antigravity-cli."""
         return [
             s for s in self.sessions.active()
-            if s.state in ("idle", "quiet") and s.pid and s.tool in ("claude", "codex")
+            if s.state in ("idle", "quiet") and s.pid
+            and (s.tool in ("claude", "codex")
+                 or (s.tool == "antigravity" and "antigravity-cli" in s.transcript))
         ]
 
     def end_sessions(self, chosen):
