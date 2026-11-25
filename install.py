@@ -150,16 +150,33 @@ def install_claude(remove: bool) -> str:
     return str(target)
 
 
+def drop_stray(stray: Path) -> None:
+    """Take our entries out of a hooks file an old install wrote where Codex
+    never looks. Anyone else's entries stay, so the file goes only when
+    nothing else is left in it, and is backed up before any rewrite."""
+    config = load_json(stray)
+    hooks = config.get("hooks")
+    if not isinstance(hooks, dict):
+        return
+    kept = strip_ours(hooks)
+    if kept == hooks:
+        return  # nothing of ours in it
+    if kept or set(config) != {"hooks"}:
+        backup(stray)
+        config["hooks"] = kept
+        write_json(stray, config)
+        return
+    try:
+        stray.unlink()
+        stray.parent.rmdir()
+    except OSError:
+        pass
+
+
 def install_codex(remove: bool) -> str:
     # Codex reads ~/.codex/hooks.json. It does NOT read ~/.codex/hooks/hooks.json,
     # which is a plugin-only path -- files there are ignored without any warning.
-    stray = paths.CODEX_HOME / "hooks" / "hooks.json"
-    if stray.exists():
-        try:
-            stray.unlink()
-            stray.parent.rmdir()
-        except OSError:
-            pass
+    drop_stray(paths.CODEX_HOME / "hooks" / "hooks.json")
     target = paths.CODEX_HOME / "hooks.json"
     config = load_json(target)
     backup(target)
