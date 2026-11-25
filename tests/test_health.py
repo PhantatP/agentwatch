@@ -46,6 +46,22 @@ def test_a_long_turn_is_not_mistaken_for_silence(tmp_path, monkeypatch):
     assert health.check({"codex": started}, _fmt)[0][2] is True
 
 
+def test_antigravity_cli_use_counts_as_use(tmp_path, monkeypatch):
+    """The CLI keeps its conversations apart from the IDE's: used only from the
+    CLI, silent hooks must still be noticed."""
+    now = time.time()
+    _setup(tmp_path, monkeypatch, used_at=now - 60)
+    gemini = tmp_path / "GEMINI_HOME"
+    (gemini / "config").mkdir(parents=True)
+    (gemini / "config" / "hooks.json").write_text('{"agentwatch": {}}', encoding="utf-8")
+    (gemini / "antigravity-cli" / "conversations").mkdir(parents=True)
+    (gemini / "antigravity-cli" / "conversations" / "c.db").write_bytes(b"")
+    rows = {tool: healthy for tool, _, healthy in health.check({"codex": now, "antigravity": now - 15 * 86400}, _fmt)}
+    assert rows["antigravity"] is False
+    rows = {tool: healthy for tool, _, healthy in health.check({"codex": now, "antigravity": now - 60}, _fmt)}
+    assert rows["antigravity"] is True
+
+
 def test_used_but_not_installed(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch, used_at=time.time() - 60, installed=False)
     assert health.check({}, _fmt) == [("codex", "hooks not installed · run install.py", False)]

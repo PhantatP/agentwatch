@@ -54,7 +54,10 @@ TOOLS = {
     "codex": (lambda: paths.CODEX_HOME / "hooks.json", _codex_newest),
     "antigravity": (
         lambda: paths.GEMINI_HOME / "config" / "hooks.json",
-        lambda: _newest(str(paths.GEMINI_HOME / "antigravity" / "conversations" / "*.pb")),
+        lambda: max(  # the IDE and the CLI keep their conversations apart
+            _newest(str(paths.GEMINI_HOME / "antigravity" / "conversations" / "*.pb")),
+            _newest(str(paths.GEMINI_HOME / "antigravity-cli" / "conversations" / "*.db")),
+        ),
     ),
 }
 
