@@ -274,6 +274,9 @@ class Panel:
                 self._note("Token totals unavailable: " + self.tray.usage_error[:60])
         if settings.get("show_hooks"):
             self._hooks()
+        # Holds the panel at its full width whatever is shown: without it, the
+        # widest section set the width, and hiding one moved the left edge.
+        tk.Frame(self.inner, bg=self.c["bg"], width=self.px(WIDTH), height=0).pack()
         self._footer()
         if old is not None:
             old.destroy()
